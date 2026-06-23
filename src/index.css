@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* Brand colour CSS custom properties — defaults match the schema column defaults.
+   Overridden at runtime by ThemeApplicator once business_theme is loaded. */
+:root {
+  --brand-primary:   #059669;
+  --brand-secondary: #0f172a;
+  --brand-accent:    #f59e0b;
+}
+
+/* Primary button — uses brand colour instead of hardcoded emerald.
+   Applied alongside Tailwind utility classes in Button.tsx. */
+.btn-brand {
+  background-color: var(--brand-primary);
+  color: white;
+}
+.btn-brand:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--brand-primary) 85%, black);
+}
+.btn-brand:disabled {
+  opacity: 0.5;
+}
