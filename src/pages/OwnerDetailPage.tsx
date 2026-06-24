@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Pencil, Trash2, CheckCircle, AlertCircle, ChevronRight, Plus } from 'lucide-react'
+import { Pencil, Trash2, CheckCircle, AlertCircle, ChevronRight, Plus, Globe, Copy, Check } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { PageHeader, Card, Button } from '@/components/ui'
@@ -19,6 +19,111 @@ type OwnerPet = {
   breed:    string | null
   is_active: boolean
   species:  Pick<Species, 'id' | 'name' | 'icon' | 'colour'> | null
+}
+
+function PortalAccessCard({ owner, canManage, portalEnabled, businessName }: {
+  owner: Owner
+  canManage: boolean
+  portalEnabled: boolean
+  businessName: string
+}) {
+  const [link, setLink]   = useState<string | null>(null)
+  const [busy, setBusy]   = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState<'link' | 'message' | null>(null)
+
+  const isLinked = !!owner.portal_user_id
+
+  const message = link
+    ? `Hi ${owner.first_name},\n\n`
+      + `You can now manage your pets with ${businessName} online — view their details, upload vaccination certificates and request stays.\n\n`
+      + `Get started here:\n${link}\n\n`
+      + `When prompted, set a password for ${owner.email} and you'll be taken straight in.`
+    : ''
+
+  async function invite() {
+    setBusy(true); setError(null)
+    const { data, error } = await supabase.rpc('create_owner_portal_invite', { p_owner_id: owner.id })
+    setBusy(false)
+    if (error) { setError(error.message); return }
+    setLink(`${window.location.origin}/portal/join?token=${data}`)
+  }
+
+  async function copy(what: 'link' | 'message') {
+    await navigator.clipboard.writeText(what === 'link' ? link! : message)
+    setCopied(what)
+    setTimeout(() => setCopied(null), 2000)
+  }
+
+  return (
+    <div className="mt-6">
+      <h3 className="text-sm font-semibold text-slate-700 mb-3">Owner portal</h3>
+      <Card>
+        {isLinked ? (
+          <div className="flex items-center gap-2 text-sm text-emerald-700">
+            <CheckCircle className="w-4 h-4 flex-shrink-0" />
+            This owner has an active portal account.
+          </div>
+        ) : (
+          <>
+            <div className="flex items-start gap-2 text-sm text-slate-600">
+              <Globe className="w-4 h-4 flex-shrink-0 mt-0.5 text-slate-400" />
+              <p>
+                Invite this owner to the portal so they can view their pets, upload documents and request stays.
+              </p>
+            </div>
+
+            {!portalEnabled && (
+              <div className="mt-3 flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                The owner portal is currently turned off — enable it in Settings → Owner portal for invites to work.
+              </div>
+            )}
+
+            {error && (
+              <div className="mt-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</div>
+            )}
+
+            {canManage && !link && (
+              <div className="mt-3">
+                <Button size="sm" icon={<Globe className="w-3.5 h-3.5" />} onClick={invite}
+                  loading={busy} disabled={!owner.email}>
+                  {owner.email ? 'Create invite link' : 'Add an email address first'}
+                </Button>
+              </div>
+            )}
+
+            {link && (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-slate-500">
+                  Send this to {owner.first_name}. They open it, set a password for <span className="font-medium">{owner.email}</span>, and they’re straight in — no separate sign-up needed.
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    readOnly
+                    value={link}
+                    onFocus={e => e.currentTarget.select()}
+                    className="flex-1 min-w-0 px-3 py-2 text-xs border border-slate-300 rounded-lg bg-slate-50 text-slate-600"
+                  />
+                  <Button size="sm" variant="secondary" onClick={() => copy('link')}
+                    icon={copied === 'link' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}>
+                    {copied === 'link' ? 'Copied' : 'Copy'}
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <span className="text-xs text-slate-400">Or copy a ready-to-send message with instructions:</span>
+                  <Button size="sm" variant="ghost" onClick={() => copy('message')}
+                    icon={copied === 'message' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}>
+                    {copied === 'message' ? 'Copied' : 'Copy message'}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </Card>
+    </div>
+  )
 }
 
 function SectionHeader({ title }: { title: string }) {
@@ -40,7 +145,7 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
 export default function OwnerDetailPage() {
   const { id }   = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { business, staffUser, isAdmin } = useBusinessContext()
+  const { business, settings, staffUser, isAdmin } = useBusinessContext()
   const canDestruct = isAdmin || canDestructiveAction(staffUser?.role ?? 'read_only')
 
   const [owner,         setOwner]         = useState<Owner | null>(null)
@@ -264,6 +369,14 @@ export default function OwnerDetailPage() {
           )}
         </dl>
       </Card>
+
+      {/* Owner portal access */}
+      <PortalAccessCard
+        owner={owner}
+        canManage={canDestruct}
+        portalEnabled={!!settings?.portal_enabled}
+        businessName={business?.name ?? 'us'}
+      />
 
       {/* Pets section */}
       <div className="mt-6">

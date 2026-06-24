@@ -1,9 +1,17 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from '@/context/AuthContext'
 import { BusinessProvider } from '@/context/BusinessContext'
+import { PortalProvider } from '@/context/PortalContext'
 import RequireAuth from '@/components/auth/RequireAuth'
 import RequireBusiness from '@/components/auth/RequireBusiness'
 import AppShell from '@/components/layout/AppShell'
+import PortalShell from '@/components/portal/PortalShell'
+import PortalHomePage from '@/pages/portal/PortalHomePage'
+import PortalPetsPage from '@/pages/portal/PortalPetsPage'
+import PortalPetDetailPage from '@/pages/portal/PortalPetDetailPage'
+import PortalRequestBookingPage from '@/pages/portal/PortalRequestBookingPage'
+import PortalProfilePage from '@/pages/portal/PortalProfilePage'
+import PortalJoinPage from '@/pages/portal/PortalJoinPage'
 import LoginPage from '@/pages/LoginPage'
 import DashboardPage from '@/pages/DashboardPage'
 import CalendarPage from '@/pages/CalendarPage'
@@ -18,6 +26,7 @@ import AccommodationPage from '@/pages/settings/AccommodationPage'
 import BookableSpacesPage from '@/pages/settings/BookableSpacesPage'
 import VaccinationTypesPage from '@/pages/settings/VaccinationTypesPage'
 import PricingPage from '@/pages/settings/PricingPage'
+import PortalSettingsPage from '@/pages/settings/PortalSettingsPage'
 import PlanPage from '@/pages/settings/PlanPage'
 import StaffPage from '@/pages/settings/StaffPage'
 import RequireRole from '@/components/auth/RequireRole'
@@ -37,10 +46,23 @@ export default function App() {
         <BusinessProvider>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            {/* Public — the page handles its own sign-up / sign-in with the invited email */}
+            <Route path="/portal/join" element={<PortalJoinPage />} />
             <Route element={<RequireAuth />}>
               <Route path="/onboarding" element={<OnboardingPage />} />
               <Route path="/join"       element={<JoinPage />} />
               <Route path="/admin"      element={<AdminPage />} />
+            </Route>
+
+            {/* Owner portal — separate authenticated surface for linked pet owners */}
+            <Route element={<RequireAuth />}>
+              <Route path="/portal" element={<PortalProvider><PortalShell /></PortalProvider>}>
+                <Route index             element={<PortalHomePage />} />
+                <Route path="pets"        element={<PortalPetsPage />} />
+                <Route path="pets/:id"    element={<PortalPetDetailPage />} />
+                <Route path="request"     element={<PortalRequestBookingPage />} />
+                <Route path="profile"     element={<PortalProfilePage />} />
+              </Route>
             </Route>
             <Route element={<RequireAuth />}>
               <Route element={<RequireBusiness />}>
@@ -66,6 +88,7 @@ export default function App() {
                     <Route path="/settings/accommodation/spaces" element={<BookableSpacesPage />} />
                     <Route path="/settings/vaccination-types" element={<VaccinationTypesPage />} />
                     <Route path="/settings/pricing" element={<PricingPage />} />
+                    <Route path="/settings/portal"  element={<PortalSettingsPage />} />
                     <Route path="/settings/plan"    element={<PlanPage />} />
                   </Route>
                   {/* Staff management — owner only */}

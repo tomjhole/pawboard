@@ -54,7 +54,7 @@ const sections = [
   {
     label: 'Owner portal',
     description: 'Self-service booking and owner account settings',
-    href: null,
+    href: '/settings/portal',
   },
   {
     label: 'Notifications',

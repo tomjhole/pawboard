@@ -531,6 +531,10 @@ export type Database = {
           created_at: string
           currency: string
           id: string
+          portal_allow_booking_requests: boolean
+          portal_allow_documents: boolean
+          portal_allow_pet_edits: boolean
+          portal_enabled: boolean
           reminder_days_before: number
           require_vaccination_proof: boolean
           require_vet_details: boolean
@@ -548,6 +552,10 @@ export type Database = {
           created_at?: string
           currency?: string
           id?: string
+          portal_allow_booking_requests?: boolean
+          portal_allow_documents?: boolean
+          portal_allow_pet_edits?: boolean
+          portal_enabled?: boolean
           reminder_days_before?: number
           require_vaccination_proof?: boolean
           require_vet_details?: boolean
@@ -565,6 +573,10 @@ export type Database = {
           created_at?: string
           currency?: string
           id?: string
+          portal_allow_booking_requests?: boolean
+          portal_allow_documents?: boolean
+          portal_allow_pet_edits?: boolean
+          portal_enabled?: boolean
           reminder_days_before?: number
           require_vaccination_proof?: boolean
           require_vet_details?: boolean
@@ -936,6 +948,57 @@ export type Database = {
             columns: ["business_id"]
             isOneToOne: false
             referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      owner_portal_invites: {
+        Row: {
+          id:          string
+          business_id: string
+          owner_id:    string
+          email:       string
+          token:       string
+          invited_by:  string | null
+          created_at:  string
+          expires_at:  string
+          accepted_at: string | null
+        }
+        Insert: {
+          id?:          string
+          business_id:  string
+          owner_id:     string
+          email:        string
+          token?:       string
+          invited_by?:  string | null
+          created_at?:  string
+          expires_at?:  string
+          accepted_at?: string | null
+        }
+        Update: {
+          id?:          string
+          business_id?: string
+          owner_id?:    string
+          email?:       string
+          token?:       string
+          invited_by?:  string | null
+          created_at?:  string
+          expires_at?:  string
+          accepted_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "owner_portal_invites_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "owner_portal_invites_owner_id_fkey"
+            columns: ["owner_id"]
+            isOneToOne: false
+            referencedRelation: "owners"
             referencedColumns: ["id"]
           },
         ]
