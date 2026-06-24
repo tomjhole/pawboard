@@ -17,6 +17,20 @@ export async function signInWithEmail(
   return { data: data.session, error: null }
 }
 
+export async function signUpWithEmail(
+  email: string,
+  password: string,
+  redirectTo = window.location.origin,
+): Promise<AuthResult<Session>> {
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: { emailRedirectTo: redirectTo },
+  })
+  if (error) return { data: null, error: normalizeAuthError(error) }
+  return { data: data.session, error: null }
+}
+
 export async function signOut(): Promise<{ error: AppError | null }> {
   const { error } = await supabase.auth.signOut()
   if (error) return { error: normalizeAuthError(error) }

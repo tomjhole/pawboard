@@ -8,6 +8,7 @@ import {
   StatusBadge, type BookingStatus,
 } from '@/components/ui'
 import type { Database } from '@/types/database'
+import { logAudit } from '@/lib/audit'
 
 // ─── Types & constants ────────────────────────────────────────────────────────
 
@@ -17,7 +18,6 @@ type Species = Database['public']['Tables']['species']['Row']
 
 export const STATUS_LABELS: Record<DbBookingStatus, string> = {
   enquiry:             'Enquiry',
-  provisional:         'Provisional',
   confirmed:           'Confirmed',
   details_outstanding: 'Details outstanding',
   ready:               'Ready for arrival',
@@ -29,16 +29,58 @@ export const STATUS_LABELS: Record<DbBookingStatus, string> = {
 }
 
 export const SELECTABLE_STATUSES: { value: DbBookingStatus; label: string }[] = [
-  { value: 'enquiry',             label: 'Enquiry'             },
-  { value: 'provisional',         label: 'Provisional'         },
-  { value: 'confirmed',           label: 'Confirmed'           },
-  { value: 'details_outstanding', label: 'Details outstanding' },
-  { value: 'ready',               label: 'Ready for arrival'   },
-  { value: 'checked_in',          label: 'Checked in'          },
-  { value: 'checked_out',         label: 'Checked out'         },
-  { value: 'cancelled',           label: 'Cancelled'           },
-  { value: 'waiting_list',        label: 'Waiting list'        },
+  { value: 'enquiry',      label: 'Enquiry'      },
+  { value: 'confirmed',    label: 'Confirmed'    },
+  { value: 'waiting_list', label: 'Waiting list' },
+  { value: 'checked_in',   label: 'Checked in'   },
+  { value: 'checked_out',  label: 'Checked out'  },
+  { value: 'cancelled',    label: 'Cancelled'    },
 ]
+
+// Statuses set via process buttons only (no dropdown).
+export const INTENT_STATUSES: { value: DbBookingStatus; label: string }[] = [
+  { value: 'enquiry',      label: 'Enquiry'      },
+  { value: 'confirmed',    label: 'Confirmed'    },
+  { value: 'waiting_list', label: 'Waiting list' },
+]
+
+export const INTENT_STATUS_SET = new Set<DbBookingStatus>(['enquiry', 'confirmed', 'waiting_list'])
+
+// Returns the status to display — overrides to details_outstanding when a pre-event
+// booking has genuinely missing info, so the badge reflects the real state.
+export function computeDisplayStatus(
+  stored: DbBookingStatus,
+  hasOutstanding: boolean,
+): DbBookingStatus {
+  if (hasOutstanding && INTENT_STATUS_SET.has(stored)) { return 'details_outstanding' }
+  return stored
+}
+
+export function hasOutstandingDetails(booking: {
+  owner: {
+    emergency_contact_name?: string | null
+    emergency_contact_phone?: string | null
+  } | null
+}): boolean {
+  const o = booking.owner
+  return !!(o && (!o.emergency_contact_name || !o.emergency_contact_phone))
+}
+
+function bsDaysSince(iso: string): number {
+  const now = new Date(); now.setHours(12, 0, 0, 0)
+  return Math.round((now.getTime() - new Date(iso + 'T12:00:00').getTime()) / 86400000)
+}
+
+export function petHasCriticalIssues(pet: {
+  vaccinations:         { is_verified: boolean }[]
+  flea_treatment_date:  string | null | undefined
+  worming_treatment_date: string | null | undefined
+}): boolean {
+  if (!pet.vaccinations.some(v => v.is_verified)) return true
+  if (!pet.flea_treatment_date || bsDaysSince(pet.flea_treatment_date) > 30) return true
+  if (!pet.worming_treatment_date || bsDaysSince(pet.worming_treatment_date) > 90) return true
+  return false
+}
 
 export function dbStatusToUi(s: DbBookingStatus): BookingStatus {
   return s.replace(/_/g, '-') as BookingStatus
@@ -104,6 +146,7 @@ function validateSpaces(
   assignments: Record<string, string>,
   pets: PetForAssignment[],
   spaces: SpaceWithSpecies[],
+  existingOccupancy: Map<string, number>,
 ): SpaceIssue[] {
   const issues: SpaceIssue[] = []
 
@@ -144,12 +187,21 @@ function validateSpaces(
       }
     }
 
-    // Over capacity — hard block (staff can leave unassigned and fix later)
-    if (assigned.length > space.max_pets) {
-      issues.push({
-        message: `${space.name} holds a maximum of ${space.max_pets} pet${space.max_pets !== 1 ? 's' : ''} — you've assigned ${assigned.length}.`,
-        blocking: true,
-      })
+    // Capacity — includes pets already assigned by other bookings for these dates
+    const existingCount = existingOccupancy.get(spaceId) ?? 0
+    const totalCount = existingCount + assigned.length
+    if (totalCount > space.max_pets) {
+      if (existingCount >= space.max_pets) {
+        issues.push({
+          message: `${space.name} is already fully booked for these dates.`,
+          blocking: true,
+        })
+      } else {
+        issues.push({
+          message: `${space.name} holds ${space.max_pets} pet${space.max_pets !== 1 ? 's' : ''} — ${existingCount} already assigned, adding ${assigned.length} more would exceed capacity.`,
+          blocking: true,
+        })
+      }
     }
   }
 
@@ -173,9 +225,11 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
   const [ownerPets,   setOwnerPets]   = useState<OwnerPetOpt[]>([])
   const [allSpecies,  setAllSpecies]  = useState<Species[]>([])
   const [spaces,      setSpaces]      = useState<SpaceWithSpecies[]>([])
-  const [saving,      setSaving]      = useState(false)
-  const [errors,      setErrors]      = useState<Record<string, string>>({})
-  const [petsLoading, setPetsLoading] = useState(false)
+  const [saving,        setSaving]        = useState(false)
+  const [errors,        setErrors]        = useState<Record<string, string>>({})
+  const [petsLoading,   setPetsLoading]   = useState(false)
+  const [occupancyMap,  setOccupancyMap]  = useState<Map<string, number>>(new Map())
+  const [newOwnerForm,  setNewOwnerForm]  = useState<{ firstName: string; lastName: string; phone: string } | null>(null)
 
   // Load reference data when modal opens
   useEffect(() => {
@@ -184,6 +238,7 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
     setOwnerSearch('')
     setOwnerPets([])
     setErrors({})
+    setNewOwnerForm(null)
     Promise.all([
       supabase.from('owners').select('id, first_name, last_name').eq('is_active', true).order('last_name').order('first_name'),
       supabase.from('species').select('*').order('is_system_default', { ascending: false }).order('sort_order').order('name'),
@@ -211,6 +266,31 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
       })
   }, [form.ownerId])
 
+  // Fetch occupied space counts for confirmed/active bookings in the selected date range.
+  useEffect(() => {
+    if (!form.startDate || !form.endDate || form.endDate < form.startDate) {
+      setOccupancyMap(new Map())
+      return
+    }
+    supabase
+      .from('bookings')
+      .select('booking_pets(booking_space_assignments(space_id))')
+      .in('status', ['confirmed', 'checked_in', 'due_out'])
+      .lte('start_date', form.endDate)
+      .gte('end_date', form.startDate)
+      .then(({ data }) => {
+        const map = new Map<string, number>()
+        for (const b of data ?? []) {
+          for (const bp of (b as any).booking_pets ?? []) {
+            for (const sa of bp.booking_space_assignments ?? []) {
+              map.set(sa.space_id, (map.get(sa.space_id) ?? 0) + 1)
+            }
+          }
+        }
+        setOccupancyMap(map)
+      })
+  }, [form.startDate, form.endDate])
+
   // Combined list of all pets included in the booking (for space assignment)
   const petsForAssignment = useMemo<PetForAssignment[]>(() => {
     const list: PetForAssignment[] = []
@@ -236,8 +316,8 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
   }, [form.selectedPetIds, form.newPets, ownerPets, allSpecies])
 
   const spaceIssues = useMemo(
-    () => validateSpaces(form.spaceAssignments, petsForAssignment, spaces),
-    [form.spaceAssignments, petsForAssignment, spaces]
+    () => validateSpaces(form.spaceAssignments, petsForAssignment, spaces, occupancyMap),
+    [form.spaceAssignments, petsForAssignment, spaces, occupancyMap]
   )
 
   const filteredOwners = useMemo(
@@ -318,10 +398,31 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
     setForm(f => ({ ...f, spaceAssignments: { ...f.spaceAssignments, [petKey]: spaceId } }))
   }
 
+  function startNewOwner() {
+    const parts = ownerSearch.trim().split(/\s+/)
+    setNewOwnerForm({
+      firstName: parts[0] ?? '',
+      lastName:  parts.slice(1).join(' '),
+      phone:     '',
+    })
+    setOwnerSearch('')
+    setForm(f => ({ ...f, ownerId: '', selectedPetIds: new Set(), newPets: [], spaceAssignments: {} }))
+    clearError('ownerId')
+  }
+
+  function cancelNewOwner() {
+    setNewOwnerForm(null)
+  }
+
   async function handleSave() {
     if (!business) return
     const errs: Record<string, string> = {}
-    if (!form.ownerId)   errs.ownerId = 'Select an owner'
+    if (!form.ownerId && !newOwnerForm) errs.ownerId = 'Select or add an owner'
+    if (newOwnerForm) {
+      if (!newOwnerForm.firstName.trim()) errs.newOwnerFirstName = 'First name required'
+      if (!newOwnerForm.lastName.trim())  errs.newOwnerLastName  = 'Last name required'
+      if (!newOwnerForm.phone.trim())     errs.newOwnerPhone     = 'Phone number required'
+    }
     if (!form.startDate) errs.startDate = 'Arrival date is required'
     if (!form.endDate)   errs.endDate = 'Departure date is required'
     if (form.startDate && form.endDate && form.endDate < form.startDate)
@@ -333,15 +434,72 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
       if (!np.speciesId)    errs[`np_${i}_species`] = 'Species required'
     })
 
-    // Block on space validation errors
+    // Block on pre-computed space validation errors (species, capacity within form)
     if (spaceIssues.some(i => i.blocking)) {
-      errs.spaceIssues = 'Fix space assignment errors before saving.'
+      errs.spaces = 'Fix space assignment errors before saving.'
     }
 
     if (Object.keys(errs).length > 0) { setErrors(errs); return }
 
     setSaving(true)
     try {
+      // 0. Create new owner if entering one inline
+      let ownerId = form.ownerId
+      if (newOwnerForm) {
+        const { data: ownerData, error: ownerErr } = await supabase
+          .from('owners')
+          .insert({
+            business_id: business.id,
+            first_name:  newOwnerForm.firstName.trim(),
+            last_name:   newOwnerForm.lastName.trim(),
+            phone:       newOwnerForm.phone.trim(),
+            is_active:   true,
+          })
+          .select('id')
+          .single()
+        if (ownerErr) throw new Error(ownerErr.message)
+        ownerId = ownerData.id
+      }
+
+      // Server-side conflict check — re-query fresh data at save time.
+      // Query bookings downward to avoid FK join ambiguity in reverse direction.
+      const assignedSpaceIds = [...new Set(Object.values(form.spaceAssignments).filter(Boolean))]
+      if (assignedSpaceIds.length > 0) {
+        const { data: conflicting } = await supabase
+          .from('bookings')
+          .select('booking_pets(booking_space_assignments(space_id))')
+          .in('status', ['confirmed', 'checked_in', 'due_out'])
+          .lte('start_date', form.endDate)
+          .gte('end_date', form.startDate)
+
+        const existingCounts = new Map<string, number>()
+        for (const b of conflicting ?? []) {
+          for (const bp of (b as any).booking_pets ?? []) {
+            for (const sa of bp.booking_space_assignments ?? []) {
+              if (assignedSpaceIds.includes(sa.space_id)) {
+                existingCounts.set(sa.space_id, (existingCounts.get(sa.space_id) ?? 0) + 1)
+              }
+            }
+          }
+        }
+        const newCounts = new Map<string, number>()
+        for (const spaceId of Object.values(form.spaceAssignments)) {
+          if (spaceId) newCounts.set(spaceId, (newCounts.get(spaceId) ?? 0) + 1)
+        }
+        for (const spaceId of assignedSpaceIds) {
+          const space = spaces.find(s => s.id === spaceId)
+          if (!space) continue
+          if ((existingCounts.get(spaceId) ?? 0) + (newCounts.get(spaceId) ?? 0) > space.max_pets) {
+            setErrors({ general: `"${space.name}" is already fully booked for those dates — please choose a different space.` })
+            setSaving(false)
+            return
+          }
+        }
+      }
+
+      // Auto-determine status: confirmed if any space assigned, enquiry otherwise
+      const autoStatus: DbBookingStatus = assignedSpaceIds.length > 0 ? 'confirmed' : 'enquiry'
+
       // 1. Create minimal pet records for new pets; track _key → new pet_id
       const keyToNewPetId = new Map<string, string>()
       for (const np of form.newPets) {
@@ -349,7 +507,7 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
           .from('pets')
           .insert({
             business_id: business.id,
-            owner_id:    form.ownerId,
+            owner_id:    ownerId,
             species_id:  np.speciesId,
             name:        np.name.trim(),
             sex:         'unknown',
@@ -366,8 +524,8 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
         .from('bookings')
         .insert({
           business_id: business.id,
-          owner_id:    form.ownerId,
-          status:      form.status,
+          owner_id:    ownerId,
+          status:      autoStatus,
           start_date:  form.startDate,
           end_date:    form.endDate,
           source:      'phone',
@@ -420,6 +578,12 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
         if (saErr) throw new Error(saErr.message)
       }
 
+      await logAudit(business.id, {
+        action:      'booking.created',
+        entity_type: 'booking',
+        entity_id:   booking.id,
+        after: { status: autoStatus, start_date: form.startDate, end_date: form.endDate },
+      })
       onCreated(booking.id)
     } catch (err) {
       setErrors({ general: err instanceof Error ? err.message : 'Something went wrong. Please try again.' })
@@ -460,7 +624,51 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
           <p className="text-sm font-medium text-slate-700">
             Owner <span className="text-red-500" aria-hidden="true">*</span>
           </p>
-          {selectedOwner ? (
+
+          {newOwnerForm !== null ? (
+            /* ── Inline new-owner form ── */
+            <div className="space-y-2 p-3 bg-slate-50 rounded-lg border border-slate-200">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">New owner</span>
+                <button type="button" onClick={cancelNewOwner} className="p-0.5 text-slate-400 hover:text-slate-600 transition-colors" aria-label="Cancel new owner">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-0.5">
+                  <input
+                    type="text"
+                    value={newOwnerForm.firstName}
+                    onChange={e => { setNewOwnerForm(f => f ? { ...f, firstName: e.target.value } : f); clearError('newOwnerFirstName') }}
+                    placeholder="First name *"
+                    className={[inputBase, errors.newOwnerFirstName ? 'border-red-400' : 'border-slate-300'].join(' ')}
+                  />
+                  {errors.newOwnerFirstName && <p className="text-xs text-red-600">{errors.newOwnerFirstName}</p>}
+                </div>
+                <div className="space-y-0.5">
+                  <input
+                    type="text"
+                    value={newOwnerForm.lastName}
+                    onChange={e => { setNewOwnerForm(f => f ? { ...f, lastName: e.target.value } : f); clearError('newOwnerLastName') }}
+                    placeholder="Last name *"
+                    className={[inputBase, errors.newOwnerLastName ? 'border-red-400' : 'border-slate-300'].join(' ')}
+                  />
+                  {errors.newOwnerLastName && <p className="text-xs text-red-600">{errors.newOwnerLastName}</p>}
+                </div>
+              </div>
+              <div className="space-y-0.5">
+                <input
+                  type="tel"
+                  value={newOwnerForm.phone}
+                  onChange={e => { setNewOwnerForm(f => f ? { ...f, phone: e.target.value } : f); clearError('newOwnerPhone') }}
+                  placeholder="Phone number *"
+                  className={[inputBase, errors.newOwnerPhone ? 'border-red-400' : 'border-slate-300'].join(' ')}
+                />
+                {errors.newOwnerPhone && <p className="text-xs text-red-600">{errors.newOwnerPhone}</p>}
+              </div>
+            </div>
+          ) : selectedOwner ? (
+            /* ── Existing owner chip ── */
             <div className={[inputBase, 'flex items-center justify-between'].join(' ')} style={{ border: '1px solid #d1d5db' }}>
               <span className="text-slate-900">{selectedOwner.first_name} {selectedOwner.last_name}</span>
               <button
@@ -473,6 +681,7 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
               </button>
             </div>
           ) : (
+            /* ── Search box ── */
             <div className="relative">
               <input
                 type="text"
@@ -482,8 +691,8 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                 className={[inputBase, errors.ownerId ? 'border-red-400' : 'border-slate-300'].join(' ')}
                 autoComplete="off"
               />
-              {filteredOwners.length > 0 && (
-                <ul className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-44 overflow-y-auto divide-y divide-slate-100">
+              {(filteredOwners.length > 0 || ownerSearch.trim().length > 0) && (
+                <ul className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-52 overflow-y-auto divide-y divide-slate-100">
                   {filteredOwners.map(o => (
                     <li key={o.id}>
                       <button
@@ -495,6 +704,18 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                       </button>
                     </li>
                   ))}
+                  <li>
+                    <button
+                      type="button"
+                      onMouseDown={startNewOwner}
+                      className="w-full text-left px-3.5 py-2.5 text-sm text-emerald-700 hover:bg-emerald-50 transition-colors flex items-center gap-2"
+                    >
+                      <Plus className="w-3.5 h-3.5 flex-shrink-0" />
+                      {ownerSearch.trim()
+                        ? `Add "${ownerSearch.trim()}" as new owner`
+                        : 'Add new owner'}
+                    </button>
+                  </li>
                 </ul>
               )}
             </div>
@@ -525,25 +746,13 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
           />
         </div>
 
-        {/* Status */}
-        <Select
-          id="nb-status"
-          label="Status"
-          value={form.status}
-          onChange={e => setField('status', e.target.value as DbBookingStatus)}
-        >
-          {SELECTABLE_STATUSES.map(s => (
-            <option key={s.value} value={s.value}>{s.label}</option>
-          ))}
-        </Select>
-
         {/* Pets */}
         <div className="space-y-2">
           <p className={['text-sm font-medium', errors.pets ? 'text-red-600' : 'text-slate-700'].join(' ')}>
             Pets <span className="text-red-500" aria-hidden="true">*</span>
           </p>
 
-          {!form.ownerId ? (
+          {!form.ownerId && !newOwnerForm ? (
             <p className="text-sm text-slate-400 italic py-1">Select an owner to see their pets.</p>
           ) : petsLoading ? (
             <p className="text-sm text-slate-400 py-1">Loading pets…</p>
@@ -646,15 +855,21 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
             <p className="text-sm font-medium text-slate-700">Space assignment (optional)</p>
             <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
               {petsForAssignment.map(pet => {
-                // Only show spaces compatible with this pet's species (or all if species unknown)
-                const compatibleSpaces = spaces.filter(s =>
+                const speciesMatch = (s: SpaceWithSpecies) =>
                   !pet.speciesId ||
                   s.accommodation_space_species.some(ss => ss.species_id === pet.speciesId)
+
+                const compatibleSpaces   = spaces.filter(s =>  speciesMatch(s))
+                const incompatibleSpaces = spaces.filter(s => !speciesMatch(s))
+
+                // Split compatible spaces into available vs. fully booked for these dates
+                const availableSpaces = compatibleSpaces.filter(s =>
+                  (occupancyMap.get(s.id) ?? 0) < s.max_pets
                 )
-                const incompatibleSpaces = spaces.filter(s =>
-                  pet.speciesId &&
-                  !s.accommodation_space_species.some(ss => ss.species_id === pet.speciesId)
+                const fullyBookedSpaces = compatibleSpaces.filter(s =>
+                  (occupancyMap.get(s.id) ?? 0) >= s.max_pets
                 )
+
                 const currentSpaceId = form.spaceAssignments[pet.key] ?? ''
                 const hasConflict = spaceIssues.some(
                   i => i.message.includes(pet.name) || i.message.includes(
@@ -680,11 +895,10 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                         ].join(' ')}
                       >
                         <option value="">No space — assign later</option>
-                        {compatibleSpaces.length > 0 && spacesByArea
+                        {availableSpaces.length > 0 && spacesByArea
                           .map(group => {
                             const groupSpaces = group.spaces.filter(s =>
-                              !pet.speciesId ||
-                              s.accommodation_space_species.some(ss => ss.species_id === pet.speciesId)
+                              speciesMatch(s) && (occupancyMap.get(s.id) ?? 0) < s.max_pets
                             )
                             if (groupSpaces.length === 0) return null
                             return (
@@ -696,6 +910,13 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                             )
                           })
                         }
+                        {fullyBookedSpaces.length > 0 && (
+                          <optgroup label="⚠ Already booked these dates">
+                            {fullyBookedSpaces.map(s => (
+                              <option key={s.id} value={s.id} disabled>{s.name}</option>
+                            ))}
+                          </optgroup>
+                        )}
                         {incompatibleSpaces.length > 0 && (
                           <optgroup label="⚠ Incompatible species">
                             {incompatibleSpaces.map(s => (
@@ -716,7 +937,7 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
             </div>
 
             {/* Validation messages */}
-            {spaceIssues.length > 0 && (
+            {(spaceIssues.length > 0 || errors.spaces) && (
               <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2.5 space-y-1">
                 {spaceIssues.map((issue, i) => (
                   <p key={i} className="text-xs text-red-700 flex items-start gap-1.5">
@@ -724,6 +945,12 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                     {issue.message}
                   </p>
                 ))}
+                {errors.spaces && (
+                  <p className="text-xs text-red-700 flex items-start gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    {errors.spaces}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -750,38 +977,60 @@ type BookingListRow = {
   status: DbBookingStatus
   start_date: string
   end_date: string
-  owner: Pick<Owner, 'id' | 'first_name' | 'last_name'> | null
-  booking_pets: { pet: { id: string; name: string } | null }[]
+  owner: {
+    id: string
+    first_name: string
+    last_name: string
+    email: string | null
+    address_line1: string | null
+    city: string | null
+    emergency_contact_name: string | null
+    emergency_contact_phone: string | null
+  } | null
+  booking_pets: {
+    pet: {
+      id: string
+      name: string
+      vet_practice_name: string | null
+      vet_phone: string | null
+      microchip_number: string | null
+      species: { name: string; icon: string | null } | null
+    } | null
+  }[]
 }
 
 function BookingRow({ booking }: { booking: BookingListRow }) {
-  const petNames = booking.booking_pets
-    .map(bp => bp.pet?.name)
-    .filter(Boolean)
-    .join(', ') || 'No pets added'
-
+  const pets = booking.booking_pets.map(bp => bp.pet).filter(Boolean) as NonNullable<BookingListRow['booking_pets'][number]['pet']>[]
   const nights = nightsBetween(booking.start_date, booking.end_date)
+  const displayStatus = computeDisplayStatus(booking.status, hasOutstandingDetails(booking))
 
   return (
     <li>
       <Link
         to={`/bookings/${booking.id}`}
-        className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors"
+        className="flex items-center gap-3 px-4 py-3.5 hover:bg-slate-50 transition-colors"
       >
-        <div className="flex-shrink-0 w-40 hidden sm:block">
-          <StatusBadge status={dbStatusToUi(booking.status)} />
+        <div className="flex-shrink-0 w-36 hidden sm:block">
+          <StatusBadge status={dbStatusToUi(displayStatus)} />
         </div>
-        <div className="sm:hidden">
-          <StatusBadge status={dbStatusToUi(booking.status)} />
+        <div className="sm:hidden flex-shrink-0">
+          <StatusBadge status={dbStatusToUi(displayStatus)} />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-slate-900">
+          <p className="text-sm font-semibold text-slate-900 truncate">
             {booking.owner?.first_name} {booking.owner?.last_name}
           </p>
-          <p className="text-xs text-slate-500 truncate">{petNames}</p>
+          <p className="text-xs text-slate-500 truncate mt-0.5">
+            {pets.length === 0 ? 'No pets' : pets.map(p => (
+              <span key={p.id} className="mr-2">
+                {p.species?.icon && <span className="mr-0.5">{p.species.icon}</span>}
+                {p.name}
+              </span>
+            ))}
+          </p>
         </div>
         <div className="text-right flex-shrink-0 hidden sm:block">
-          <p className="text-sm text-slate-700">{formatBookingDate(booking.start_date)}</p>
+          <p className="text-xs font-medium text-slate-700">{formatBookingDate(booking.start_date)}</p>
           <p className="text-xs text-slate-400">{nights} night{nights !== 1 ? 's' : ''}</p>
         </div>
         <ChevronRight className="w-4 h-4 text-slate-300 flex-shrink-0" />
@@ -792,6 +1041,8 @@ function BookingRow({ booking }: { booking: BookingListRow }) {
 
 // ─── BookingsPage ─────────────────────────────────────────────────────────────
 
+const PAST_STATUSES = new Set<DbBookingStatus>(['checked_out', 'cancelled'])
+
 export default function BookingsPage() {
   const navigate = useNavigate()
   const [bookings,     setBookings]     = useState<BookingListRow[]>([])
@@ -799,6 +1050,7 @@ export default function BookingsPage() {
   const [newOpen,      setNewOpen]      = useState(false)
   const [search,       setSearch]       = useState('')
   const [statusFilter, setStatusFilter] = useState<DbBookingStatus | 'all'>('all')
+  const [showPast,     setShowPast]     = useState(false)
 
   async function load() {
     setLoading(true)
@@ -806,55 +1058,79 @@ export default function BookingsPage() {
       .from('bookings')
       .select(`
         id, status, start_date, end_date,
-        owner:owner_id ( id, first_name, last_name ),
-        booking_pets ( pet:pet_id ( id, name ) )
+        owner:owner_id ( id, first_name, last_name, email, address_line1, city, emergency_contact_name, emergency_contact_phone ),
+        booking_pets ( pet:pet_id ( id, name, vet_practice_name, vet_phone, microchip_number,
+          species:species_id ( name, icon ) ) )
       `)
-      .order('start_date', { ascending: false })
+      .order('start_date', { ascending: true })
     setBookings((data ?? []) as unknown as BookingListRow[])
     setLoading(false)
   }
 
   useEffect(() => { load() }, [])
 
+  const visibleBookings = useMemo(
+    () => showPast ? bookings : bookings.filter(b => !PAST_STATUSES.has(b.status)),
+    [bookings, showPast],
+  )
+
   const statusesPresent = useMemo(() => {
-    const s = new Set(bookings.map(b => b.status))
+    const s = new Set(visibleBookings.map(b => b.status))
     return SELECTABLE_STATUSES.filter(ss => s.has(ss.value))
-  }, [bookings])
+  }, [visibleBookings])
 
   const filtered = useMemo(() => {
-    let list = bookings
+    let list = visibleBookings
     if (statusFilter !== 'all') list = list.filter(b => b.status === statusFilter)
-    if (search) {
+    if (search.trim()) {
       const q = search.toLowerCase()
-      list = list.filter(b =>
-        `${b.owner?.first_name ?? ''} ${b.owner?.last_name ?? ''}`.toLowerCase().includes(q)
-      )
+      list = list.filter(b => {
+        if (`${b.owner?.first_name ?? ''} ${b.owner?.last_name ?? ''}`.toLowerCase().includes(q)) return true
+        if (b.booking_pets.some(bp => bp.pet?.name.toLowerCase().includes(q))) return true
+        return false
+      })
     }
     return list
-  }, [bookings, statusFilter, search])
+  }, [visibleBookings, statusFilter, search])
 
   return (
     <div className="max-w-3xl">
       <PageHeader
         title="Bookings"
-        description="All bookings, sorted by arrival date"
         action={
-          <Button
-            icon={<Plus className="w-4 h-4" />}
-            onClick={() => setNewOpen(true)}
-          >
+          <Button icon={<Plus className="w-4 h-4" />} onClick={() => setNewOpen(true)}>
             New booking
           </Button>
         }
       />
 
-      {/* Status filter chips */}
+      {/* Filter bar */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <input
+          type="search"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search owner or pet…"
+          className="flex-1 min-w-[160px] max-w-xs px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-colors"
+        />
+        <label className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={showPast}
+            onChange={e => { setShowPast(e.target.checked); setStatusFilter('all') }}
+            className="rounded border-slate-300"
+          />
+          Show past
+        </label>
+      </div>
+
+      {/* Status chips */}
       {statusesPresent.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-4">
-          {([{ value: 'all', label: `All (${bookings.length})` }] as { value: DbBookingStatus | 'all'; label: string }[])
+          {([{ value: 'all' as const, label: `All (${visibleBookings.length})` }] as { value: DbBookingStatus | 'all'; label: string }[])
             .concat(statusesPresent.map(s => ({
               value: s.value as DbBookingStatus | 'all',
-              label: `${s.label} (${bookings.filter(b => b.status === s.value).length})`,
+              label: `${s.label} (${visibleBookings.filter(b => b.status === s.value).length})`,
             })))
             .map(chip => {
               const active = statusFilter === chip.value
@@ -875,19 +1151,6 @@ export default function BookingsPage() {
         </div>
       )}
 
-      {/* Search */}
-      {bookings.length > 0 && (
-        <div className="mb-4">
-          <input
-            type="search"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search by owner name…"
-            className="w-full max-w-xs px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-lg placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-colors"
-          />
-        </div>
-      )}
-
       {loading ? (
         <Card><p className="text-sm text-slate-400 text-center py-4">Loading…</p></Card>
       ) : bookings.length === 0 ? (
@@ -900,7 +1163,7 @@ export default function BookingsPage() {
         </Card>
       ) : filtered.length === 0 ? (
         <Card>
-          <p className="text-sm text-slate-400 text-center py-6 italic">No bookings match your filter.</p>
+          <p className="text-sm text-slate-400 text-center py-6 italic">No bookings match your filters.</p>
         </Card>
       ) : (
         <Card padding="none">

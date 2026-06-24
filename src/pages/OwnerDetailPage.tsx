@@ -6,6 +6,8 @@ import { useBusinessContext } from '@/context/BusinessContext'
 import { PageHeader, Card, Button } from '@/components/ui'
 import { OwnerModal, type OwnerForm } from '@/pages/OwnersPage'
 import { PetModal, buildPetPayload, type PetForm } from '@/pages/PetsPage'
+import { logAudit } from '@/lib/audit'
+import { canDestructiveAction } from '@/lib/roles'
 import type { Database } from '@/types/database'
 
 type Owner   = Database['public']['Tables']['owners']['Row']
@@ -38,7 +40,8 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
 export default function OwnerDetailPage() {
   const { id }   = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { business } = useBusinessContext()
+  const { business, staffUser, isAdmin } = useBusinessContext()
+  const canDestruct = isAdmin || canDestructiveAction(staffUser?.role ?? 'read_only')
 
   const [owner,         setOwner]         = useState<Owner | null>(null)
   const [loading,       setLoading]       = useState(true)
@@ -101,6 +104,12 @@ export default function OwnerDetailPage() {
       })
       .eq('id', ownerId)
     if (error) throw new Error(error.message)
+    await logAudit(business!.id, {
+      action:      'owner.updated',
+      entity_type: 'owner',
+      entity_id:   ownerId,
+      after: { name: `${form.firstName.trim()} ${form.lastName.trim()}` },
+    })
     await load()
   }
 
@@ -176,15 +185,17 @@ export default function OwnerDetailPage() {
               >
                 Edit
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                icon={<Trash2 className="w-3.5 h-3.5" />}
-                onClick={() => setConfirmDelete(true)}
-                className="text-red-500 border-red-200 hover:bg-red-50 hover:border-red-300"
-              >
-                Delete
-              </Button>
+              {canDestruct && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<Trash2 className="w-3.5 h-3.5" />}
+                  onClick={() => setConfirmDelete(true)}
+                  className="text-red-500 border-red-200 hover:bg-red-50 hover:border-red-300"
+                >
+                  Delete
+                </Button>
+              )}
             </div>
           )
         }

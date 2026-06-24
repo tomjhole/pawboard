@@ -263,37 +263,49 @@ export type Database = {
       }
       audit_log: {
         Row: {
-          action: string
+          action:      string
+          actor_label: string | null
+          after:       Json | null
+          before:      Json | null
           business_id: string
-          created_at: string
-          entity_id: string
+          created_at:  string
+          entity_id:   string
           entity_type: string
-          id: string
-          ip_address: unknown
-          payload: Json | null
-          user_id: string | null
+          id:          string
+          ip_address:  unknown
+          meta:        Json | null
+          payload:     Json | null
+          user_id:     string | null
         }
         Insert: {
-          action: string
-          business_id: string
-          created_at?: string
-          entity_id: string
-          entity_type: string
-          id?: string
-          ip_address?: unknown
-          payload?: Json | null
-          user_id?: string | null
+          action:       string
+          actor_label?: string | null
+          after?:       Json | null
+          before?:      Json | null
+          business_id:  string
+          created_at?:  string
+          entity_id:    string
+          entity_type:  string
+          id?:          string
+          ip_address?:  unknown
+          meta?:        Json | null
+          payload?:     Json | null
+          user_id?:     string | null
         }
         Update: {
-          action?: string
+          action?:      string
+          actor_label?: string | null
+          after?:       Json | null
+          before?:      Json | null
           business_id?: string
-          created_at?: string
-          entity_id?: string
+          created_at?:  string
+          entity_id?:   string
           entity_type?: string
-          id?: string
-          ip_address?: unknown
-          payload?: Json | null
-          user_id?: string | null
+          id?:          string
+          ip_address?:  unknown
+          meta?:        Json | null
+          payload?:     Json | null
+          user_id?:     string | null
         }
         Relationships: [
           {
@@ -311,6 +323,7 @@ export type Database = {
           business_id: string
           created_at: string
           feeding_instructions: string | null
+          feeds_per_day: number | null
           id: string
           medication_notes: string | null
           notes: string | null
@@ -321,6 +334,7 @@ export type Database = {
           business_id: string
           created_at?: string
           feeding_instructions?: string | null
+          feeds_per_day?: number | null
           id?: string
           medication_notes?: string | null
           notes?: string | null
@@ -331,6 +345,7 @@ export type Database = {
           business_id?: string
           created_at?: string
           feeding_instructions?: string | null
+          feeds_per_day?: number | null
           id?: string
           medication_notes?: string | null
           notes?: string | null
@@ -756,11 +771,15 @@ export type Database = {
           behaviour_notes: string | null
           breed: string | null
           business_id: string
+          can_mix_with_others: boolean
           colour_markings: string | null
           created_at: string
           created_by: string | null
           date_of_birth: string | null
           feeding_instructions: string | null
+          feeds_per_day: number
+          flea_treatment_date: string | null
+          flea_treatment_product: string | null
           id: string
           insurance_policy_number: string | null
           insurance_provider: string | null
@@ -779,16 +798,22 @@ export type Database = {
           vet_name: string | null
           vet_phone: string | null
           vet_practice_name: string | null
+          worming_treatment_date: string | null
+          worming_treatment_product: string | null
         }
         Insert: {
           behaviour_notes?: string | null
           breed?: string | null
           business_id: string
+          can_mix_with_others?: boolean
           colour_markings?: string | null
           created_at?: string
           created_by?: string | null
           date_of_birth?: string | null
           feeding_instructions?: string | null
+          feeds_per_day?: number
+          flea_treatment_date?: string | null
+          flea_treatment_product?: string | null
           id?: string
           insurance_policy_number?: string | null
           insurance_provider?: string | null
@@ -807,16 +832,22 @@ export type Database = {
           vet_name?: string | null
           vet_phone?: string | null
           vet_practice_name?: string | null
+          worming_treatment_date?: string | null
+          worming_treatment_product?: string | null
         }
         Update: {
           behaviour_notes?: string | null
           breed?: string | null
           business_id?: string
+          can_mix_with_others?: boolean
           colour_markings?: string | null
           created_at?: string
           created_by?: string | null
           date_of_birth?: string | null
           feeding_instructions?: string | null
+          feeds_per_day?: number
+          flea_treatment_date?: string | null
+          flea_treatment_product?: string | null
           id?: string
           insurance_policy_number?: string | null
           insurance_provider?: string | null
@@ -835,6 +866,8 @@ export type Database = {
           vet_name?: string | null
           vet_phone?: string | null
           vet_practice_name?: string | null
+          worming_treatment_date?: string | null
+          worming_treatment_product?: string | null
         }
         Relationships: [
           {
@@ -900,6 +933,50 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "species_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      staff_invites: {
+        Row: {
+          id:          string
+          business_id: string
+          email:       string
+          role:        Database["public"]["Enums"]["staff_role"]
+          invited_by:  string | null
+          token:       string
+          created_at:  string
+          expires_at:  string
+          accepted_at: string | null
+        }
+        Insert: {
+          id?:         string
+          business_id: string
+          email:       string
+          role?:       Database["public"]["Enums"]["staff_role"]
+          invited_by?: string | null
+          token?:      string
+          created_at?: string
+          expires_at?: string
+          accepted_at?: string | null
+        }
+        Update: {
+          id?:         string
+          business_id?: string
+          email?:      string
+          role?:       Database["public"]["Enums"]["staff_role"]
+          invited_by?: string | null
+          token?:      string
+          created_at?: string
+          expires_at?: string
+          accepted_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "staff_invites_business_id_fkey"
             columns: ["business_id"]
             isOneToOne: false
             referencedRelation: "businesses"
@@ -1039,7 +1116,6 @@ export type Database = {
     Enums: {
       booking_status:
         | "enquiry"
-        | "provisional"
         | "confirmed"
         | "details_outstanding"
         | "ready"
@@ -1181,7 +1257,6 @@ export const Constants = {
     Enums: {
       booking_status: [
         "enquiry",
-        "provisional",
         "confirmed",
         "details_outstanding",
         "ready",

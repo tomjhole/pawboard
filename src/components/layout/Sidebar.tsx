@@ -2,27 +2,28 @@ import { NavLink } from 'react-router-dom'
 import {
   CalendarDays,
   ClipboardList,
+  ClipboardCheck,
   LayoutDashboard,
   Users,
   PawPrint,
-  Building2,
   Settings,
   X,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { useBusinessContext } from '@/context/BusinessContext'
+import { canAccessSettings } from '@/lib/roles'
 
 interface SidebarProps {
   onClose: () => void
 }
 
 const mainNav = [
-  { to: '/calendar',  label: 'Calendar',  icon: CalendarDays   },
-  { to: '/bookings',  label: 'Bookings',  icon: ClipboardList  },
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/owners',    label: 'Owners',    icon: Users          },
-  { to: '/pets',      label: 'Pets',      icon: PawPrint       },
-  { to: '/spaces',    label: 'Spaces',    icon: Building2      },
+  { to: '/operations', label: 'Operations', icon: ClipboardCheck  },
+  { to: '/dashboard',  label: 'This week',  icon: LayoutDashboard },
+  { to: '/calendar',   label: 'Calendar',   icon: CalendarDays    },
+  { to: '/bookings',   label: 'Bookings',   icon: ClipboardList   },
+  { to: '/owners',     label: 'Owners',     icon: Users           },
+  { to: '/pets',       label: 'Pets',       icon: PawPrint        },
 ]
 
 const navBase = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors'
@@ -44,7 +45,8 @@ function navStyle({ isActive }: { isActive: boolean }) {
 
 export default function Sidebar({ onClose }: SidebarProps) {
   const { user } = useAuth()
-  const { staffUser, business } = useBusinessContext()
+  const { staffUser, business, isAdmin } = useBusinessContext()
+  const showSettings = isAdmin || (staffUser ? canAccessSettings(staffUser.role) : false)
 
   const displayName = staffUser
     ? `${staffUser.first_name} ${staffUser.last_name}`.trim()
@@ -80,10 +82,12 @@ export default function Sidebar({ onClose }: SidebarProps) {
       </nav>
 
       <div className="px-3 pb-3 border-t border-slate-200 pt-3 space-y-0.5">
-        <NavLink to="/settings" className={navClass} style={navStyle} onClick={onClose}>
-          <Settings className="w-5 h-5 flex-shrink-0" />
-          Settings
-        </NavLink>
+        {showSettings && (
+          <NavLink to="/settings" className={navClass} style={navStyle} onClick={onClose}>
+            <Settings className="w-5 h-5 flex-shrink-0" />
+            Settings
+          </NavLink>
+        )}
 
         <div className="flex items-center gap-3 px-3 py-2.5 mt-1">
           <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0"

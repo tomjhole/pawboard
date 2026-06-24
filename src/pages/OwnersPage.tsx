@@ -233,7 +233,20 @@ export function OwnerModal({
 
         {/* ── Emergency contact ───────────────────────── */}
         <div className="space-y-4">
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Emergency contact</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Emergency contact</p>
+            <button
+              type="button"
+              onClick={() => {
+                set('emergencyName',         `${form.firstName.trim()} ${form.lastName.trim()}`.trim())
+                set('emergencyPhone',        form.phone)
+                set('emergencyRelationship', 'Self')
+              }}
+              className="text-xs font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+            >
+              Same as owner
+            </button>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <Input
               id="owner-ec-name"

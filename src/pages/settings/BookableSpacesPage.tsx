@@ -1,15 +1,19 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Plus, Pencil, Trash2, LayoutGrid } from 'lucide-react'
+import { Plus, Pencil, Trash2, LayoutGrid, CopyPlus } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { logAudit } from '@/lib/audit'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { PageHeader, Card, Button, Input, Select, Textarea, Modal, EmptyState } from '@/components/ui'
+import { PageHeader, Card, Button, Input, Select, Textarea, Modal, EmptyState, PlanGate } from '@/components/ui'
+import { usePlan } from '@/lib/plans'
 import type { Database } from '@/types/database'
 
 type PetSize      = Database['public']['Enums']['pet_size']
 type SpaceTypeRow = Database['public']['Tables']['accommodation_space_types']['Row']
 type AreaRow      = Database['public']['Tables']['accommodation_areas']['Row']
 type Species      = Database['public']['Tables']['species']['Row']
+
+type AreaWithSpecies = AreaRow & { speciesIds: string[] }
 
 type SpaceSpeciesRow = {
   species_id: string
@@ -363,7 +367,7 @@ function SpaceModal({
 }: {
   open:         boolean
   initialSpace: Space | null
-  areas:        AreaRow[]
+  areas:        AreaWithSpecies[]
   spaceTypes:   SpaceTypeRow[]
   allSpecies:   Species[]
   onClose:      () => void
@@ -400,9 +404,18 @@ function SpaceModal({
 
   function set<K extends keyof SpaceForm>(k: K, v: SpaceForm[K]) {
     setForm(prev => ({ ...prev, [k]: v }))
-    if (k === 'name' && errors.name)           setErrors(prev => ({ ...prev, name: undefined }))
-    if (k === 'areaId' && errors.areaId)       setErrors(prev => ({ ...prev, areaId: undefined }))
+    if (k === 'name' && errors.name)             setErrors(prev => ({ ...prev, name: undefined }))
+    if (k === 'areaId' && errors.areaId)         setErrors(prev => ({ ...prev, areaId: undefined }))
     if (k === 'speciesIds' && errors.speciesIds) setErrors(prev => ({ ...prev, speciesIds: undefined }))
+  }
+
+  function setArea(id: string) {
+    const newArea = areas.find(a => a.id === id)
+    const restricted = newArea && newArea.speciesIds.length > 0
+    const allowed = restricted ? new Set(newArea!.speciesIds) : null
+    const kept = allowed ? form.speciesIds.filter(sid => allowed.has(sid)) : form.speciesIds
+    setForm(prev => ({ ...prev, areaId: id, speciesIds: kept }))
+    if (errors.areaId) { setErrors(prev => ({ ...prev, areaId: undefined })) }
   }
 
   function toggleSpecies(id: string) {
@@ -451,6 +464,13 @@ function SpaceModal({
     ? areas.find(a => a.id === initialSpace.area_id && !a.is_active)
     : null
 
+  // Filter species to those permitted by the selected area (if the area has a restriction)
+  const selectedArea = areas.find(a => a.id === form.areaId)
+  const areaRestricted = selectedArea && selectedArea.speciesIds.length > 0
+  const permittedSpecies = areaRestricted
+    ? activeSpecies.filter(s => selectedArea!.speciesIds.includes(s.id))
+    : activeSpecies
+
   return (
     <Modal
       open={open}
@@ -488,7 +508,7 @@ function SpaceModal({
               id="space-area"
               label="Area"
               value={form.areaId}
-              onChange={e => set('areaId', e.target.value)}
+              onChange={e => setArea(e.target.value)}
               error={errors.areaId}
               required
             >
@@ -527,11 +547,18 @@ function SpaceModal({
               <span className="text-red-500 ml-1" aria-hidden="true">*</span>
             </label>
 
-            {activeSpecies.length === 0 ? (
-              <p className="text-sm text-slate-400 italic">No active species configured.</p>
+            {areaRestricted && (
+              <p className="text-xs text-slate-500 -mt-1">
+                Restricted to the species allowed in this area.
+              </p>
+            )}
+            {permittedSpecies.length === 0 ? (
+              <p className="text-sm text-slate-400 italic">
+                {form.areaId ? 'No species are configured for this area.' : 'No active species configured.'}
+              </p>
             ) : (
               <div className="flex flex-wrap gap-2">
-                {activeSpecies.map(s => {
+                {permittedSpecies.map(s => {
                   const selected = form.speciesIds.includes(s.id)
                   return (
                     <button
@@ -556,6 +583,7 @@ function SpaceModal({
                 })}
               </div>
             )}
+
 
             {errors.speciesIds && (
               <p className="text-xs text-red-600" role="alert">{errors.speciesIds}</p>
@@ -668,18 +696,363 @@ function SpaceModal({
   )
 }
 
+// ─── Bulk create modal ─────────────────────────────────────────────────────
+
+interface BulkForm {
+  areaId:            string
+  prefix:            string
+  startNumber:       number
+  count:             number
+  spaceTypeId:       string
+  speciesIds:        string[]
+  allowedSizes:      PetSize[]
+  maxPets:           number
+  sameHouseholdOnly: boolean
+}
+
+const EMPTY_BULK: BulkForm = {
+  areaId: '', prefix: '', startNumber: 1, count: 5,
+  spaceTypeId: '', speciesIds: [], allowedSizes: [], maxPets: 1,
+  sameHouseholdOnly: true,
+}
+
+interface BulkFormErrors {
+  areaId?:     string
+  prefix?:     string
+  count?:      string
+  speciesIds?: string
+}
+
+function BulkCreateModal({
+  open,
+  areas,
+  spaceTypes,
+  allSpecies,
+  onClose,
+  onSave,
+}: {
+  open:       boolean
+  areas:      AreaWithSpecies[]
+  spaceTypes: SpaceTypeRow[]
+  allSpecies: Species[]
+  onClose:    () => void
+  onSave:     (form: BulkForm) => Promise<void>
+}) {
+  const [form,        setFormState] = useState<BulkForm>(EMPTY_BULK)
+  const [errors,      setErrors]    = useState<BulkFormErrors>({})
+  const [saving,      setSaving]    = useState(false)
+  const [serverError, setServerError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (open) {
+      setFormState(EMPTY_BULK)
+      setErrors({})
+      setServerError(null)
+    }
+  }, [open])
+
+  function set<K extends keyof BulkForm>(k: K, v: BulkForm[K]) {
+    setFormState(prev => ({ ...prev, [k]: v }))
+  }
+
+  function setArea(id: string) {
+    const newArea = areas.find(a => a.id === id)
+    const restricted = newArea && newArea.speciesIds.length > 0
+    const allowed = restricted ? new Set(newArea!.speciesIds) : null
+    const kept = allowed ? form.speciesIds.filter(sid => allowed.has(sid)) : form.speciesIds
+    setFormState(prev => ({ ...prev, areaId: id, speciesIds: kept }))
+    if (errors.areaId) { setErrors(prev => ({ ...prev, areaId: undefined })) }
+  }
+
+  function toggleSpecies(id: string) {
+    const next = form.speciesIds.includes(id)
+      ? form.speciesIds.filter(s => s !== id)
+      : [...form.speciesIds, id]
+    set('speciesIds', next)
+    if (errors.speciesIds) { setErrors(prev => ({ ...prev, speciesIds: undefined })) }
+  }
+
+  function toggleSize(size: PetSize) {
+    const next = form.allowedSizes.includes(size)
+      ? form.allowedSizes.filter(s => s !== size)
+      : [...form.allowedSizes, size]
+    set('allowedSizes', next)
+  }
+
+  function validate() {
+    const errs: BulkFormErrors = {}
+    if (!form.areaId)               errs.areaId     = 'Please select an area.'
+    if (!form.prefix.trim())        errs.prefix     = 'A name prefix is required.'
+    if (form.count < 1 || form.count > 100) errs.count = 'Count must be between 1 and 100.'
+    if (form.speciesIds.length === 0) errs.speciesIds = 'At least one species is required.'
+    setErrors(errs)
+    return Object.keys(errs).length === 0
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!validate()) return
+    setSaving(true)
+    setServerError(null)
+    try {
+      await onSave(form)
+      onClose()
+    } catch (err) {
+      setServerError(err instanceof Error ? err.message : 'Something went wrong.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const activeSpecies = allSpecies.filter(s => s.is_active)
+  const activeAreas   = areas.filter(a => a.is_active)
+  const selectedArea  = areas.find(a => a.id === form.areaId)
+  const areaRestricted = selectedArea && selectedArea.speciesIds.length > 0
+  const permittedSpecies = areaRestricted
+    ? activeSpecies.filter(s => selectedArea!.speciesIds.includes(s.id))
+    : activeSpecies
+
+  const preview = form.prefix.trim() && form.count >= 1
+    ? `${form.prefix.trim()} ${form.startNumber} … ${form.prefix.trim()} ${form.startNumber + form.count - 1}`
+    : null
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Create multiple spaces"
+      size="lg"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button form="bulk-form" type="submit" loading={saving}>
+            Create {form.count > 0 ? form.count : ''} space{form.count !== 1 ? 's' : ''}
+          </Button>
+        </>
+      }
+    >
+      <form id="bulk-form" onSubmit={handleSubmit} className="space-y-5" noValidate>
+
+        {/* ── Naming ─────────────────────────────────── */}
+        <div className="space-y-4">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Naming</p>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div className="col-span-2">
+              <Input
+                id="bulk-prefix"
+                label="Name prefix"
+                value={form.prefix}
+                onChange={e => set('prefix', e.target.value)}
+                error={errors.prefix}
+                placeholder="e.g. Kennel, Cat Suite"
+                required
+                autoComplete="off"
+              />
+            </div>
+            <Input
+              id="bulk-start"
+              label="Start at"
+              type="number"
+              min={0}
+              value={form.startNumber}
+              onChange={e => set('startNumber', parseInt(e.target.value) || 1)}
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-4 items-end">
+            <Input
+              id="bulk-count"
+              label="How many"
+              type="number"
+              min={1}
+              max={100}
+              value={form.count}
+              onChange={e => set('count', parseInt(e.target.value) || 1)}
+              error={errors.count}
+              required
+            />
+            {preview && (
+              <div className="col-span-2 pb-1">
+                <p className="text-xs text-slate-500">
+                  Will create: <span className="font-medium text-slate-700">{preview}</span>
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <hr className="border-slate-100" />
+
+        {/* ── Location & type ────────────────────────── */}
+        <div className="space-y-4">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Location & type</p>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Select
+              id="bulk-area"
+              label="Area"
+              value={form.areaId}
+              onChange={e => setArea(e.target.value)}
+              error={errors.areaId}
+              required
+            >
+              <option value="">— Select area —</option>
+              {activeAreas.map(a => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </Select>
+
+            <Select
+              id="bulk-type"
+              label="Space type"
+              value={form.spaceTypeId}
+              onChange={e => set('spaceTypeId', e.target.value)}
+            >
+              <option value="">— None —</option>
+              {spaceTypes.map(t => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </Select>
+          </div>
+        </div>
+
+        <hr className="border-slate-100" />
+
+        {/* ── Permitted animals ───────────────────────── */}
+        <div className="space-y-4">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Permitted animals</p>
+
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-slate-700">
+              Allowed species
+              <span className="text-red-500 ml-1" aria-hidden="true">*</span>
+            </label>
+
+            {areaRestricted && (
+              <p className="text-xs text-slate-500">Restricted to the species allowed in this area.</p>
+            )}
+
+            {permittedSpecies.length === 0 ? (
+              <p className="text-sm text-slate-400 italic">
+                {form.areaId ? 'No species are configured for this area.' : 'Select an area first.'}
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {permittedSpecies.map(s => {
+                  const selected = form.speciesIds.includes(s.id)
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => toggleSpecies(s.id)}
+                      className={[
+                        'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm border transition-all',
+                        selected
+                          ? 'border-transparent text-white shadow-sm'
+                          : 'border-slate-200 text-slate-600 hover:border-slate-300 bg-white',
+                      ].join(' ')}
+                      style={selected ? {
+                        backgroundColor: s.colour ?? 'var(--brand-primary)',
+                        borderColor:     s.colour ?? 'var(--brand-primary)',
+                      } : {}}
+                    >
+                      {s.icon && <span>{s.icon}</span>}
+                      {s.name}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {errors.speciesIds && (
+              <p className="text-xs text-red-600" role="alert">{errors.speciesIds}</p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-slate-700">
+              Size categories
+              <span className="text-slate-400 font-normal ml-1.5 text-xs">
+                — leave all unchecked to allow all sizes
+              </span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {SIZE_OPTIONS.map(({ value, label }) => {
+                const selected = form.allowedSizes.includes(value)
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => toggleSize(value)}
+                    className={[
+                      'px-3 py-1.5 rounded-full text-sm border transition-all',
+                      selected
+                        ? 'bg-slate-700 border-slate-700 text-white shadow-sm'
+                        : 'border-slate-200 text-slate-600 hover:border-slate-300 bg-white',
+                    ].join(' ')}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <hr className="border-slate-100" />
+
+        {/* ── Booking rules ───────────────────────────── */}
+        <div className="space-y-4">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Booking rules</p>
+
+          <div className="w-36">
+            <Input
+              id="bulk-max-pets"
+              label="Max pets per space"
+              type="number"
+              min={1}
+              value={form.maxPets}
+              onChange={e => set('maxPets', Math.max(1, parseInt(e.target.value) || 1))}
+            />
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border border-slate-200 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-slate-900">Same household only</p>
+              <p className="text-xs text-slate-500">Only pets from the same booking can share this space</p>
+            </div>
+            <Toggle
+              checked={form.sameHouseholdOnly}
+              onChange={v => set('sameHouseholdOnly', v)}
+            />
+          </div>
+        </div>
+
+        {serverError && (
+          <p className="text-sm text-red-600" role="alert">{serverError}</p>
+        )}
+      </form>
+    </Modal>
+  )
+}
+
 // ─── Page ──────────────────────────────────────────────────────────────────
 
 export default function BookableSpacesPage() {
   const { business } = useBusinessContext()
+  const { within } = usePlan()
 
-  const [spaces,       setSpaces]       = useState<Space[]>([])
-  const [areas,        setAreas]        = useState<AreaRow[]>([])
-  const [spaceTypes,   setSpaceTypes]   = useState<SpaceTypeRow[]>([])
-  const [allSpecies,   setAllSpecies]   = useState<Species[]>([])
-  const [loading,      setLoading]      = useState(true)
-  const [modalOpen,    setModalOpen]    = useState(false)
-  const [editingSpace, setEditingSpace] = useState<Space | null>(null)
+  const [spaces,        setSpaces]        = useState<Space[]>([])
+  const [areas,         setAreas]         = useState<AreaWithSpecies[]>([])
+  const [spaceTypes,    setSpaceTypes]    = useState<SpaceTypeRow[]>([])
+  const [allSpecies,    setAllSpecies]    = useState<Species[]>([])
+  const [loading,       setLoading]       = useState(true)
+  const [modalOpen,     setModalOpen]     = useState(false)
+  const [editingSpace,  setEditingSpace]  = useState<Space | null>(null)
+  const [bulkOpen,      setBulkOpen]      = useState(false)
+
+  const canAddSpace = within('maxSpaces', spaces.length)
 
   async function load() {
     setLoading(true)
@@ -699,7 +1072,7 @@ export default function BookableSpacesPage() {
         .order('name'),
       supabase
         .from('accommodation_areas')
-        .select('*')
+        .select('*, accommodation_area_species ( species_id )')
         .order('sort_order')
         .order('name'),
       supabase
@@ -714,7 +1087,10 @@ export default function BookableSpacesPage() {
         .order('name'),
     ])
     setSpaces((spacesRes.data ?? []) as Space[])
-    setAreas(areasRes.data ?? [])
+    setAreas((areasRes.data ?? []).map(a => ({
+      ...a,
+      speciesIds: (a.accommodation_area_species as { species_id: string }[] | undefined ?? []).map(r => r.species_id),
+    })))
     setSpaceTypes(typesRes.data ?? [])
     setAllSpecies(speciesRes.data ?? [])
     setLoading(false)
@@ -725,13 +1101,59 @@ export default function BookableSpacesPage() {
   function openAdd()          { setEditingSpace(null); setModalOpen(true) }
   function openEdit(s: Space) { setEditingSpace(s);    setModalOpen(true) }
 
+  async function handleBulkSave(form: BulkForm) {
+    const spacesToCreate = Array.from({ length: form.count }, (_, i) => ({
+      business_id:             business!.id,
+      name:                    `${form.prefix.trim()} ${form.startNumber + i}`,
+      area_id:                 form.areaId,
+      space_type_id:           form.spaceTypeId || null,
+      allowed_pet_sizes:       form.allowedSizes.length > 0 ? form.allowedSizes : null,
+      max_pets:                form.maxPets,
+      same_household_only:     form.sameHouseholdOnly,
+      requires_staff_approval: false,
+      is_active:               true,
+      sort_order:              spaces.length + i,
+    }))
+    const { data: created, error } = await supabase
+      .from('accommodation_spaces')
+      .insert(spacesToCreate)
+      .select('id')
+    if (error) throw new Error(error.message)
+
+    if (form.speciesIds.length > 0 && created) {
+      const speciesLinks = created.flatMap(space =>
+        form.speciesIds.map(species_id => ({
+          space_id:    space.id,
+          species_id,
+          business_id: business!.id,
+        }))
+      )
+      const { error: sErr } = await supabase
+        .from('accommodation_space_species')
+        .insert(speciesLinks)
+      if (sErr) throw new Error(sErr.message)
+    }
+
+    await load()
+  }
+
   async function handleToggle(id: string, active: boolean) {
     setSpaces(prev => prev.map(s => s.id === id ? { ...s, is_active: active } : s))
     const { error } = await supabase
       .from('accommodation_spaces')
       .update({ is_active: active })
       .eq('id', id)
-    if (error) setSpaces(prev => prev.map(s => s.id === id ? { ...s, is_active: !active } : s))
+    if (error) {
+      setSpaces(prev => prev.map(s => s.id === id ? { ...s, is_active: !active } : s))
+    } else {
+      const spaceName = spaces.find(s => s.id === id)?.name ?? null
+      await logAudit(business!.id, {
+        action:      'space.updated',
+        entity_type: 'space',
+        entity_id:   id,
+        after: { name: spaceName, is_active: active },
+      })
+    }
   }
 
   async function handleDelete(id: string) {
@@ -790,6 +1212,12 @@ export default function BookableSpacesPage() {
           })))
         if (sErr) throw new Error(sErr.message)
       }
+      await logAudit(business!.id, {
+        action:      'space.updated',
+        entity_type: 'space',
+        entity_id:   id,
+        after: { name: form.name.trim(), is_active: form.isActive },
+      })
     } else {
       const { data: newSpace, error } = await supabase
         .from('accommodation_spaces')
@@ -820,6 +1248,12 @@ export default function BookableSpacesPage() {
           })))
         if (sErr) throw new Error(sErr.message)
       }
+      await logAudit(business!.id, {
+        action:      'space.created',
+        entity_type: 'space',
+        entity_id:   newSpace.id,
+        after: { name: form.name.trim(), is_active: true },
+      })
     }
 
     await load()
@@ -840,13 +1274,33 @@ export default function BookableSpacesPage() {
         description="Physical spaces available for pet boarding — kennels, catteries, hutches and enclosures"
         backHref="/settings"
         action={
-          <Button icon={<Plus className="w-4 h-4" />} onClick={openAdd}>
-            Add space
-          </Button>
+          canAddSpace ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                icon={<CopyPlus className="w-4 h-4" />}
+                onClick={() => setBulkOpen(true)}
+              >
+                Create multiple
+              </Button>
+              <Button icon={<Plus className="w-4 h-4" />} onClick={openAdd}>
+                Add space
+              </Button>
+            </div>
+          ) : undefined
         }
       />
 
       <AccommodationTabs />
+
+      {!canAddSpace && (
+        <PlanGate
+          feature="More bookable spaces"
+          requiredPlan="PawBoard Professional"
+          limitHit
+          className="mb-4"
+        />
+      )}
 
       <SpaceTypesSection
         types={spaceTypes}
@@ -863,9 +1317,11 @@ export default function BookableSpacesPage() {
             title="No bookable spaces yet"
             description="Add your kennels, catteries, hutches or enclosures. Each space belongs to an area and must allow at least one species."
             action={
-              <Button variant="secondary" icon={<Plus className="w-4 h-4" />} onClick={openAdd}>
-                Add space
-              </Button>
+              canAddSpace ? (
+                <Button variant="secondary" icon={<Plus className="w-4 h-4" />} onClick={openAdd}>
+                  Add space
+                </Button>
+              ) : undefined
             }
           />
         ) : (
@@ -922,6 +1378,15 @@ export default function BookableSpacesPage() {
         allSpecies={allSpecies}
         onClose={() => setModalOpen(false)}
         onSave={handleSave}
+      />
+
+      <BulkCreateModal
+        open={bulkOpen}
+        areas={areas}
+        spaceTypes={spaceTypes}
+        allSpecies={allSpecies}
+        onClose={() => setBulkOpen(false)}
+        onSave={handleBulkSave}
       />
     </div>
   )

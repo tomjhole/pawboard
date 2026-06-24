@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react'
 import { Plus, Pencil, Trash2, Building2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { PageHeader, Card, Button, Input, Textarea, Modal, EmptyState } from '@/components/ui'
+import { PageHeader, Card, Button, Input, Textarea, Modal, EmptyState, PlanGate } from '@/components/ui'
 import { AccommodationTabs } from '@/pages/settings/BookableSpacesPage'
+import { usePlan } from '@/lib/plans'
 import type { Database } from '@/types/database'
 
 type Area    = Database['public']['Tables']['accommodation_areas']['Row']
@@ -346,12 +347,15 @@ function AreaModal({
 
 export default function AccommodationPage() {
   const { business } = useBusinessContext()
+  const { within } = usePlan()
 
   const [areas, setAreas]         = useState<AreaWithSpecies[]>([])
   const [allSpecies, setAllSpecies] = useState<Species[]>([])
   const [loading, setLoading]     = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [editingArea, setEditingArea] = useState<AreaWithSpecies | null>(null)
+
+  const canAddArea = within('maxAreas', areas.length)
 
   async function load() {
     setLoading(true)
@@ -469,13 +473,24 @@ export default function AccommodationPage() {
         description="Group your spaces into areas such as dog blocks, catteries and small animal rooms"
         backHref="/settings"
         action={
-          <Button icon={<Plus className="w-4 h-4" />} onClick={openAdd}>
-            Add area
-          </Button>
+          canAddArea ? (
+            <Button icon={<Plus className="w-4 h-4" />} onClick={openAdd}>
+              Add area
+            </Button>
+          ) : undefined
         }
       />
 
       <AccommodationTabs />
+
+      {!canAddArea && (
+        <PlanGate
+          feature="More accommodation areas"
+          requiredPlan="PawBoard Professional"
+          limitHit
+          className="mb-4"
+        />
+      )}
 
       <Card padding="none">
         {loading ? (

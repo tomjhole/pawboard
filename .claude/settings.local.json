@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(find /c/Users/tomh -maxdepth 5 -name \"node.exe\" 2>/dev/null | head -5; find /c -maxdepth 5 -name \"node.exe\" 2>/dev/null | head -5)",
+      "Read(//c/Users/tomh/**)",
+      "PowerShell(Get-Command node -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command npm -ErrorAction SilentlyContinue)"
+    ]
+  }
+}

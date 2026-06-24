@@ -1,10 +1,15 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Search, ChevronRight, PawPrint } from 'lucide-react'
+import { Plus, Search, ChevronRight, PawPrint, Camera, Upload, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { PageHeader, Card, Button, Input, Select, Textarea, Modal, EmptyState } from '@/components/ui'
 import type { Database } from '@/types/database'
+import { logAudit } from '@/lib/audit'
+
+function toTitleCase(str: string): string {
+  return str.replace(/\b\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+}
 
 type PetSex  = Database['public']['Enums']['pet_sex']
 type PetSize = Database['public']['Enums']['pet_size']
@@ -34,9 +39,15 @@ export interface PetForm {
   vetAddress:            string
   insuranceProvider:     string
   insurancePolicyNumber: string
-  medicalNotes:          string
-  behaviourNotes:        string
-  feedingInstructions:   string
+  medicalNotes:              string
+  behaviourNotes:            string
+  canMixWithOthers:          boolean
+  feedsPerDay:               number
+  feedingInstructions:       string
+  fleaTreatmentDate:         string
+  fleaTreatmentProduct:      string
+  wormingTreatmentDate:      string
+  wormingTreatmentProduct:   string
 }
 
 export const EMPTY_PET_FORM: PetForm = {
@@ -45,7 +56,43 @@ export const EMPTY_PET_FORM: PetForm = {
   microchipNumber: '', photoUrl: '', vetPracticeName: '', vetName: '',
   vetPhone: '', vetAddress: '', insuranceProvider: '',
   insurancePolicyNumber: '', medicalNotes: '', behaviourNotes: '',
+  canMixWithOthers: true,
+  feedsPerDay: 2,
   feedingInstructions: '',
+  fleaTreatmentDate: '', fleaTreatmentProduct: '',
+  wormingTreatmentDate: '', wormingTreatmentProduct: '',
+}
+
+// ─── BreedInput ───────────────────────────────────────────────────────────────
+
+function BreedInput({ value, onChange, knownBreeds }: {
+  value:       string
+  onChange:    (v: string) => void
+  knownBreeds: string[]
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label htmlFor="pet-breed" className="text-sm font-medium text-slate-700 block">Breed</label>
+      <input
+        id="pet-breed"
+        list="pet-breed-list"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onBlur={e => {
+          const trimmed = e.target.value.trim()
+          if (trimmed) onChange(toTitleCase(trimmed))
+        }}
+        placeholder="e.g. Labrador Retriever"
+        autoComplete="off"
+        className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+      />
+      {knownBreeds.length > 0 && (
+        <datalist id="pet-breed-list">
+          {knownBreeds.map(b => <option key={b} value={b} />)}
+        </datalist>
+      )}
+    </div>
+  )
 }
 
 export const SIZE_LABELS: Record<PetSize, string> = {
@@ -60,6 +107,7 @@ export function PetModal({
   owners,
   allSpecies,
   defaultOwnerId,
+  knownBreeds = [],
   onClose,
   onSave,
 }: {
@@ -68,15 +116,44 @@ export function PetModal({
   owners:          Pick<Owner, 'id' | 'first_name' | 'last_name'>[]
   allSpecies:      Species[]
   defaultOwnerId?: string
+  knownBreeds?:    string[]
   onClose:         () => void
   onSave:          (form: PetForm, id: string | null) => Promise<void>
 }) {
   const isEdit = initialPet !== null
+  const { business } = useBusinessContext()
 
-  const [form,        setForm]        = useState<PetForm>(EMPTY_PET_FORM)
-  const [errors,      setErrors]      = useState<{ name?: string; ownerId?: string; speciesId?: string }>({})
-  const [saving,      setSaving]      = useState(false)
-  const [serverError, setServerError] = useState<string | null>(null)
+  const [form,           setForm]           = useState<PetForm>(EMPTY_PET_FORM)
+  const [errors,         setErrors]         = useState<{ name?: string; ownerId?: string; speciesId?: string }>({})
+  const [saving,         setSaving]         = useState(false)
+  const [serverError,    setServerError]    = useState<string | null>(null)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [photoError,     setPhotoError]     = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  async function handlePhotoUpload(file: File) {
+    if (!business) return
+    if (file.size > 5 * 1024 * 1024) { setPhotoError('File must be under 5 MB'); return }
+    setPhotoError(null)
+    setUploadingPhoto(true)
+    try {
+      const ext  = file.name.split('.').pop()?.toLowerCase() ?? 'jpg'
+      const path = `${business.id}/${Date.now()}.${ext}`
+      const { error: upErr } = await supabase.storage.from('pets').upload(path, file, { upsert: true })
+      if (upErr) throw upErr
+      const { data } = supabase.storage.from('pets').getPublicUrl(path)
+      set('photoUrl', data.publicUrl)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upload failed'
+      setPhotoError(
+        msg.toLowerCase().includes('bucket')
+          ? 'Storage bucket not found — create a public bucket named "pets" in your Supabase Storage settings'
+          : msg
+      )
+    } finally {
+      setUploadingPhoto(false)
+    }
+  }
 
   useEffect(() => {
     if (!open) return
@@ -99,15 +176,23 @@ export function PetModal({
         vetAddress:            initialPet.vet_address             ?? '',
         insuranceProvider:     initialPet.insurance_provider      ?? '',
         insurancePolicyNumber: initialPet.insurance_policy_number ?? '',
-        medicalNotes:          initialPet.medical_notes           ?? '',
-        behaviourNotes:        initialPet.behaviour_notes         ?? '',
-        feedingInstructions:   initialPet.feeding_instructions    ?? '',
+        medicalNotes:              initialPet.medical_notes              ?? '',
+        behaviourNotes:            initialPet.behaviour_notes            ?? '',
+        canMixWithOthers:          initialPet.can_mix_with_others         ?? true,
+        feedsPerDay:               initialPet.feeds_per_day              ?? 2,
+        feedingInstructions:       initialPet.feeding_instructions       ?? '',
+        fleaTreatmentDate:         initialPet.flea_treatment_date        ?? '',
+        fleaTreatmentProduct:      initialPet.flea_treatment_product     ?? '',
+        wormingTreatmentDate:      initialPet.worming_treatment_date     ?? '',
+        wormingTreatmentProduct:   initialPet.worming_treatment_product  ?? '',
       })
     } else {
       setForm({ ...EMPTY_PET_FORM, ownerId: defaultOwnerId ?? '' })
     }
     setErrors({})
     setServerError(null)
+    setPhotoError(null)
+    setUploadingPhoto(false)
   }, [open, initialPet, defaultOwnerId])
 
   function set<K extends keyof PetForm>(k: K, v: PetForm[K]) {
@@ -208,13 +293,10 @@ export function PetModal({
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <Input
-              id="pet-breed"
-              label="Breed"
+            <BreedInput
               value={form.breed}
-              onChange={e => set('breed', e.target.value)}
-              placeholder="e.g. Labrador, Moggy, Lionhead"
-              autoComplete="off"
+              onChange={v => set('breed', v)}
+              knownBreeds={knownBreeds}
             />
             <Select
               id="pet-sex"
@@ -282,15 +364,53 @@ export function PetModal({
             placeholder="e.g. Black and white, Tabby, Ginger"
             autoComplete="off"
           />
-          <Input
-            id="pet-photo"
-            label="Photo URL"
-            type="url"
-            value={form.photoUrl}
-            onChange={e => set('photoUrl', e.target.value)}
-            placeholder="https://…"
-            hint="Paste a link to a photo of the pet"
-          />
+          <div className="space-y-1.5">
+            <p className="text-sm font-medium text-slate-700">Photo</p>
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-xl bg-slate-100 flex-shrink-0 overflow-hidden flex items-center justify-center border border-slate-200">
+                {form.photoUrl
+                  ? <img src={form.photoUrl} alt="Pet" className="w-full h-full object-cover" />
+                  : <Camera className="w-6 h-6 text-slate-300" />
+                }
+              </div>
+              <div className="flex-1 min-w-0">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handlePhotoUpload(f) }}
+                />
+                <div className="flex gap-2 flex-wrap">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    icon={<Upload className="w-3.5 h-3.5" />}
+                    loading={uploadingPhoto}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    {form.photoUrl ? 'Change' : 'Upload photo'}
+                  </Button>
+                  {form.photoUrl && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      icon={<X className="w-3.5 h-3.5" />}
+                      onClick={() => { set('photoUrl', ''); setPhotoError(null) }}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </div>
+                {photoError
+                  ? <p className="text-xs text-red-600 mt-1">{photoError}</p>
+                  : <p className="text-xs text-slate-400 mt-1">JPG, PNG or WebP · max 5 MB</p>
+                }
+              </div>
+            </div>
+          </div>
         </div>
 
         <hr className="border-slate-100" />
@@ -357,6 +477,47 @@ export function PetModal({
 
         <hr className="border-slate-100" />
 
+        {/* ── Preventive treatments ───────────────────── */}
+        <div className="space-y-4">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Preventive treatments</p>
+          <div className="grid grid-cols-2 gap-4">
+            <Input
+              id="pet-flea-date"
+              label="Flea treatment — last date"
+              type="date"
+              value={form.fleaTreatmentDate}
+              onChange={e => set('fleaTreatmentDate', e.target.value)}
+            />
+            <Input
+              id="pet-flea-product"
+              label="Product used"
+              value={form.fleaTreatmentProduct}
+              onChange={e => set('fleaTreatmentProduct', e.target.value)}
+              placeholder="e.g. Frontline, Advocate"
+              autoComplete="off"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Input
+              id="pet-worming-date"
+              label="Worming — last date"
+              type="date"
+              value={form.wormingTreatmentDate}
+              onChange={e => set('wormingTreatmentDate', e.target.value)}
+            />
+            <Input
+              id="pet-worming-product"
+              label="Product used"
+              value={form.wormingTreatmentProduct}
+              onChange={e => set('wormingTreatmentProduct', e.target.value)}
+              placeholder="e.g. Drontal, Milbemax"
+              autoComplete="off"
+            />
+          </div>
+        </div>
+
+        <hr className="border-slate-100" />
+
         {/* ── Care notes ──────────────────────────────── */}
         <div className="space-y-4">
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Care notes</p>
@@ -376,6 +537,56 @@ export function PetModal({
             rows={3}
             placeholder="Temperament, triggers, how they interact with others…"
           />
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700 block">Can mix with other animals?</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => set('canMixWithOthers', true)}
+                className={[
+                  'flex-1 py-2 rounded-lg text-sm font-medium border transition-colors',
+                  form.canMixWithOthers
+                    ? 'bg-emerald-600 border-emerald-600 text-white'
+                    : 'bg-white border-slate-300 text-slate-700 hover:border-emerald-400',
+                ].join(' ')}
+              >
+                Yes
+              </button>
+              <button
+                type="button"
+                onClick={() => set('canMixWithOthers', false)}
+                className={[
+                  'flex-1 py-2 rounded-lg text-sm font-medium border transition-colors',
+                  !form.canMixWithOthers
+                    ? 'bg-rose-600 border-rose-600 text-white'
+                    : 'bg-white border-slate-300 text-slate-700 hover:border-rose-400',
+                ].join(' ')}
+              >
+                No — keep separate
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700 block">Feeds per day</label>
+            <div className="flex gap-2">
+              {([1, 2, 3, 4] as const).map(n => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => set('feedsPerDay', n)}
+                  className={[
+                    'flex-1 py-2 rounded-lg text-sm font-medium border transition-colors',
+                    form.feedsPerDay === n
+                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                      : 'bg-white border-slate-300 text-slate-700 hover:border-emerald-400',
+                  ].join(' ')}
+                >
+                  {n}×
+                </button>
+              ))}
+            </div>
+          </div>
           <Textarea
             id="pet-feeding"
             label="Feeding instructions"
@@ -442,7 +653,7 @@ export function buildPetPayload(form: PetForm) {
     name:                    form.name.trim(),
     owner_id:                form.ownerId,
     species_id:              form.speciesId,
-    breed:                   form.breed.trim()                 || null,
+    breed:                   form.breed.trim() ? toTitleCase(form.breed.trim()) : null,
     sex:                     form.sex,
     is_neutered:             form.isNeutered === 'yes' ? true : form.isNeutered === 'no' ? false : null,
     date_of_birth:           form.dateOfBirth                  || null,
@@ -456,9 +667,15 @@ export function buildPetPayload(form: PetForm) {
     vet_address:             form.vetAddress.trim()            || null,
     insurance_provider:      form.insuranceProvider.trim()     || null,
     insurance_policy_number: form.insurancePolicyNumber.trim() || null,
-    medical_notes:           form.medicalNotes.trim()          || null,
-    behaviour_notes:         form.behaviourNotes.trim()        || null,
-    feeding_instructions:    form.feedingInstructions.trim()   || null,
+    medical_notes:              form.medicalNotes.trim()             || null,
+    behaviour_notes:            form.behaviourNotes.trim()           || null,
+    can_mix_with_others:        form.canMixWithOthers,
+    feeds_per_day:              form.feedsPerDay,
+    feeding_instructions:       form.feedingInstructions.trim()      || null,
+    flea_treatment_date:        form.fleaTreatmentDate               || null,
+    flea_treatment_product:     form.fleaTreatmentProduct.trim()     || null,
+    worming_treatment_date:     form.wormingTreatmentDate            || null,
+    worming_treatment_product:  form.wormingTreatmentProduct.trim()  || null,
   }
 }
 
@@ -468,6 +685,7 @@ export default function PetsPage() {
   const [pets,          setPets]         = useState<PetWithRelations[]>([])
   const [owners,        setOwners]       = useState<Pick<Owner, 'id' | 'first_name' | 'last_name'>[]>([])
   const [allSpecies,    setAllSpecies]   = useState<Species[]>([])
+  const [knownBreeds,   setKnownBreeds]  = useState<string[]>([])
   const [loading,       setLoading]      = useState(true)
   const [search,        setSearch]       = useState('')
   const [speciesFilter, setSpeciesFilter] = useState('all')
@@ -475,7 +693,7 @@ export default function PetsPage() {
 
   async function load() {
     setLoading(true)
-    const [petsRes, ownersRes, speciesRes] = await Promise.all([
+    const [petsRes, ownersRes, speciesRes, breedsRes] = await Promise.all([
       supabase
         .from('pets')
         .select(`
@@ -493,10 +711,19 @@ export default function PetsPage() {
         .select('*')
         .order('is_system_default', { ascending: false })
         .order('sort_order').order('name'),
+      supabase
+        .from('pets')
+        .select('breed')
+        .not('breed', 'is', null)
+        .order('breed'),
     ])
     setPets((petsRes.data ?? []) as PetWithRelations[])
     setOwners(ownersRes.data ?? [])
     setAllSpecies(speciesRes.data ?? [])
+    const breeds = [...new Set(
+      (breedsRes.data ?? []).map((r: any) => r.breed as string).filter(Boolean)
+    )].sort()
+    setKnownBreeds(breeds)
     setLoading(false)
   }
 
@@ -507,11 +734,25 @@ export default function PetsPage() {
     if (id) {
       const { error } = await supabase.from('pets').update(payload).eq('id', id)
       if (error) throw new Error(error.message)
+      await logAudit(business!.id, {
+        action:      'pet.updated',
+        entity_type: 'pet',
+        entity_id:   id,
+        after: { name: form.name },
+      })
     } else {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('pets')
         .insert({ ...payload, business_id: business!.id, is_active: true })
+        .select('id')
+        .single()
       if (error) throw new Error(error.message)
+      await logAudit(business!.id, {
+        action:      'pet.created',
+        entity_type: 'pet',
+        entity_id:   data.id,
+        after: { name: form.name },
+      })
     }
     await load()
   }
@@ -634,6 +875,7 @@ export default function PetsPage() {
         initialPet={null}
         owners={owners}
         allSpecies={allSpecies}
+        knownBreeds={knownBreeds}
         onClose={() => setModalOpen(false)}
         onSave={handleSave}
       />

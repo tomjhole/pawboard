@@ -14,7 +14,7 @@ export type BusinessState =
   | { status: 'error'; message: string }
   | {
       status: 'ready'
-      staffUser: StaffUser
+      staffUser: StaffUser | null
       business: Business
       settings: BusinessSettings | null
       theme: BusinessTheme | null
@@ -22,23 +22,35 @@ export type BusinessState =
 
 interface BusinessContextValue {
   state: BusinessState
-  // Flat convenience accessors — null unless state.status === 'ready'
   staffUser: StaffUser | null
   business: Business | null
   settings: BusinessSettings | null
   theme: BusinessTheme | null
-  // Call after mutating business data to refresh context
+  isAdmin: boolean
   reload: () => void
+  switchBusiness: (id: string) => Promise<void>
+  clearAdminView: () => Promise<void>
 }
 
 const BusinessContext = createContext<BusinessContextValue | null>(null)
 
 export function BusinessProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
-  const [state, setState] = useState<BusinessState>({ status: 'loading' })
-  const [tick, setTick] = useState(0)
+  const [state,   setState]   = useState<BusinessState>({ status: 'loading' })
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [tick,    setTick]    = useState(0)
 
   const reload = useCallback(() => setTick(t => t + 1), [])
+
+  const switchBusiness = useCallback(async (id: string) => {
+    await supabase.rpc('set_admin_view', { target_business_id: id })
+    reload()
+  }, [reload])
+
+  const clearAdminView = useCallback(async () => {
+    await supabase.rpc('set_admin_view', { target_business_id: null })
+    reload()
+  }, [reload])
 
   useEffect(() => {
     if (!user) {
@@ -51,33 +63,65 @@ export function BusinessProvider({ children }: { children: ReactNode }) {
     async function load() {
       setState({ status: 'loading' })
 
-      // Load staff user — PGRST116 means no matching row
-      const { data: staffUser, error: staffError } = await supabase
-        .from('staff_users')
-        .select('*')
-        .eq('id', user!.id)
-        .eq('is_active', true)
-        .single()
+      // Check admin status and own staff record in parallel
+      const [adminRes, staffRes] = await Promise.all([
+        supabase.rpc('is_platform_admin'),
+        supabase
+          .from('staff_users')
+          .select('*')
+          .eq('id', user!.id)
+          .eq('is_active', true)
+          .single(),
+      ])
 
       if (cancelled) return
 
-      if (!staffUser) {
-        if (staffError?.code === 'PGRST116') {
-          setState({ status: 'no-staff-record' })
+      const userIsAdmin = adminRes.data === true
+      setIsAdmin(userIsAdmin)
+
+      let businessId: string | null = null
+
+      if (userIsAdmin) {
+        // Admin: check if they have a view override set
+        const { data: overrideId } = await supabase.rpc('get_admin_view_business_id')
+        if (cancelled) return
+
+        if (overrideId) {
+          businessId = overrideId
+        } else if (staffRes.data) {
+          // Admin has their own business — use it as default
+          businessId = staffRes.data.business_id
         } else {
-          setState({
-            status: 'error',
-            message: staffError?.message ?? 'Failed to load your staff account.',
-          })
+          // Admin with no business selected and no own business → send to /admin
+          setState({ status: 'no-staff-record' })
+          return
         }
+      } else {
+        // Normal user
+        if (!staffRes.data) {
+          if (staffRes.error?.code === 'PGRST116') {
+            setState({ status: 'no-staff-record' })
+          } else {
+            setState({
+              status: 'error',
+              message: staffRes.error?.message ?? 'Failed to load your staff account.',
+            })
+          }
+          return
+        }
+        businessId = staffRes.data.business_id
+      }
+
+      if (!businessId) {
+        setState({ status: 'no-staff-record' })
         return
       }
 
       // Load business, settings and theme in parallel
       const [bizResult, settingsResult, themeResult] = await Promise.all([
-        supabase.from('businesses').select('*').eq('id', staffUser.business_id).single(),
-        supabase.from('business_settings').select('*').eq('business_id', staffUser.business_id).maybeSingle(),
-        supabase.from('business_theme').select('*').eq('business_id', staffUser.business_id).maybeSingle(),
+        supabase.from('businesses').select('*').eq('id', businessId).single(),
+        supabase.from('business_settings').select('*').eq('business_id', businessId).maybeSingle(),
+        supabase.from('business_theme').select('*').eq('business_id', businessId).maybeSingle(),
       ])
 
       if (cancelled) return
@@ -92,10 +136,11 @@ export function BusinessProvider({ children }: { children: ReactNode }) {
 
       setState({
         status: 'ready',
-        staffUser,
-        business: bizResult.data,
-        settings: settingsResult.data ?? null,
-        theme: themeResult.data ?? null,
+        // staffUser may be null when admin is viewing a different business
+        staffUser: staffRes.data ?? null,
+        business:  bizResult.data,
+        settings:  settingsResult.data ?? null,
+        theme:     themeResult.data ?? null,
       })
     }
 
@@ -108,11 +153,14 @@ export function BusinessProvider({ children }: { children: ReactNode }) {
   return (
     <BusinessContext.Provider value={{
       state,
-      staffUser: ready?.staffUser ?? null,
-      business:  ready?.business  ?? null,
-      settings:  ready?.settings  ?? null,
-      theme:     ready?.theme     ?? null,
+      staffUser:      ready?.staffUser ?? null,
+      business:       ready?.business  ?? null,
+      settings:       ready?.settings  ?? null,
+      theme:          ready?.theme     ?? null,
+      isAdmin,
       reload,
+      switchBusiness,
+      clearAdminView,
     }}>
       {children}
     </BusinessContext.Provider>

@@ -1,12 +1,18 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Pencil, Trash2, AlertCircle, CheckCircle, AlertTriangle } from 'lucide-react'
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
+import { Pencil, Trash2, AlertCircle, CheckCircle, AlertTriangle, LogIn, LogOut, Ban, Undo2, Users } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import { PageHeader, Card, Button, Modal, Input, Select, Textarea, StatusBadge } from '@/components/ui'
+import { logAudit } from '@/lib/audit'
+import { AuditLog } from '@/components/AuditLog'
+import { useBusinessContext } from '@/context/BusinessContext'
+import { canDestructiveAction } from '@/lib/roles'
+import { PageHeader, Card, Button, Modal, Input, Textarea, StatusBadge } from '@/components/ui'
 import {
   type DbBookingStatus, type SpaceWithSpecies,
-  SELECTABLE_STATUSES, dbStatusToUi, formatBookingDate, SPACES_QUERY,
+  computeDisplayStatus, dbStatusToUi, formatBookingDate, SPACES_QUERY,
+  petHasCriticalIssues,
 } from '@/pages/BookingsPage'
+import BookingPricing, { BookingPricingSummary } from '@/components/BookingPricing'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,6 +25,8 @@ type BookingDetail = {
   notes: string | null
   source: string
   created_at: string
+  checked_in_at: string | null
+  checked_out_at: string | null
   owner: {
     id: string
     first_name: string
@@ -32,25 +40,45 @@ type BookingDetail = {
   } | null
   booking_pets: {
     id: string
+    feeding_instructions: string | null
+    medication_notes: string | null
+    notes: string | null
+    feeds_per_day: number | null
     pet: {
       id: string
       name: string
       breed: string | null
+      size: string | null
+      can_mix_with_others: boolean
+      feeds_per_day: number | null
+      behaviour_notes: string | null
+      feeding_instructions: string | null
+      medical_notes: string | null
       vet_practice_name: string | null
       vet_phone: string | null
       microchip_number: string | null
+      flea_treatment_date: string | null
+      flea_treatment_product: string | null
+      worming_treatment_date: string | null
+      worming_treatment_product: string | null
       species: { id: string; name: string; icon: string | null; colour: string | null } | null
+      vaccinations: { id: string; is_verified: boolean }[]
     } | null
     booking_space_assignments: {
       id: string
-      space: { id: string; name: string } | null
+      space: { id: string; name: string; area_id: string | null } | null
     }[]
   }[]
 }
 
-type MissingItem = { label: string; href: string }
+type MissingItem = { label: string; href?: string }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function daysSince(iso: string): number {
+  const today = new Date(); today.setHours(12, 0, 0, 0)
+  return Math.round((today.getTime() - new Date(iso + 'T12:00:00').getTime()) / 86400000)
+}
 
 function nightsBetween(start: string, end: string): number {
   return Math.round(
@@ -58,26 +86,38 @@ function nightsBetween(start: string, end: string): number {
   )
 }
 
-function computeMissing(booking: BookingDetail): MissingItem[] {
-  const items: MissingItem[] = []
+function computeMissing(booking: BookingDetail): { critical: MissingItem[]; advisory: MissingItem[] } {
+  const critical: MissingItem[] = []
+  const advisory: MissingItem[] = []
   const owner = booking.owner
-  if (owner) {
-    if (!owner.email)
-      items.push({ label: `Email address missing for ${owner.first_name}`, href: `/owners/${owner.id}` })
-    if (!owner.address_line1 && !owner.city)
-      items.push({ label: `Address missing for ${owner.first_name}`, href: `/owners/${owner.id}` })
-    if (!owner.emergency_contact_name || !owner.emergency_contact_phone)
-      items.push({ label: `Emergency contact details missing for ${owner.first_name}`, href: `/owners/${owner.id}` })
-  }
+
+  if (owner && (!owner.emergency_contact_name || !owner.emergency_contact_phone))
+    advisory.push({ label: `Emergency contact missing for ${owner.first_name}`, href: `/owners/${owner.id}` })
+
   for (const bp of booking.booking_pets) {
     const pet = bp.pet
     if (!pet) continue
+
+    if ((booking.status === 'enquiry' || booking.status === 'waiting_list') && !bp.booking_space_assignments[0]?.space)
+      critical.push({ label: `No space assigned for ${pet.name} — use the space selector in Pets below` })
+
     if (!pet.vet_practice_name && !pet.vet_phone)
-      items.push({ label: `Vet details missing for ${pet.name}`, href: `/pets/${pet.id}` })
+      advisory.push({ label: `Vet details not recorded for ${pet.name}`, href: `/pets/${pet.id}` })
     if (!pet.microchip_number)
-      items.push({ label: `Microchip number missing for ${pet.name}`, href: `/pets/${pet.id}` })
+      advisory.push({ label: `Microchip number not recorded for ${pet.name}`, href: `/pets/${pet.id}` })
+
+    if (!pet.vaccinations.some(v => v.is_verified))
+      critical.push({ label: `No verified vaccinations for ${pet.name}`, href: `/pets/${pet.id}` })
+    if (!pet.flea_treatment_date)
+      critical.push({ label: `No flea treatment on record for ${pet.name}`, href: `/pets/${pet.id}` })
+    else if (daysSince(pet.flea_treatment_date) > 30)
+      critical.push({ label: `Flea treatment overdue for ${pet.name} — ${daysSince(pet.flea_treatment_date)} days ago`, href: `/pets/${pet.id}` })
+    if (!pet.worming_treatment_date)
+      critical.push({ label: `No worming treatment on record for ${pet.name}`, href: `/pets/${pet.id}` })
+    else if (daysSince(pet.worming_treatment_date) > 90)
+      critical.push({ label: `Worming overdue for ${pet.name} — ${daysSince(pet.worming_treatment_date)} days ago`, href: `/pets/${pet.id}` })
   }
-  return items
+  return { critical, advisory }
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -96,26 +136,55 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
   )
 }
 
-function AttentionPanel({ items }: { items: MissingItem[] }) {
+function CriticalPanel({ items }: { items: MissingItem[] }) {
   if (items.length === 0) return null
   return (
-    <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3.5">
+    <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3.5">
+      <div className="flex items-center gap-2 mb-2.5">
+        <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+        <p className="text-sm font-semibold text-rose-800">
+          {items.length} critical issue{items.length !== 1 ? 's' : ''} — booking cannot be confirmed until resolved
+        </p>
+      </div>
+      <ul className="space-y-1.5">
+        {items.map((item, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 flex-shrink-0 mt-1.5" />
+            {item.href ? (
+              <Link to={item.href} className="text-sm text-rose-800 hover:text-rose-900 hover:underline">
+                {item.label}
+              </Link>
+            ) : (
+              <span className="text-sm text-rose-800">{item.label}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function AdvisoryPanel({ items }: { items: MissingItem[] }) {
+  if (items.length === 0) return null
+  return (
+    <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3.5">
       <div className="flex items-center gap-2 mb-2.5">
         <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
         <p className="text-sm font-semibold text-amber-800">
-          {items.length} item{items.length !== 1 ? 's' : ''} still needed before check-in
+          {items.length} item{items.length !== 1 ? 's' : ''} worth noting
         </p>
       </div>
       <ul className="space-y-1.5">
         {items.map((item, i) => (
           <li key={i} className="flex items-start gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0 mt-1.5" />
-            <Link
-              to={item.href}
-              className="text-sm text-amber-800 hover:text-amber-900 hover:underline"
-            >
-              {item.label}
-            </Link>
+            {item.href ? (
+              <Link to={item.href} className="text-sm text-amber-800 hover:text-amber-900 hover:underline">
+                {item.label}
+              </Link>
+            ) : (
+              <span className="text-sm text-amber-800">{item.label}</span>
+            )}
           </li>
         ))}
       </ul>
@@ -126,7 +195,6 @@ function AttentionPanel({ items }: { items: MissingItem[] }) {
 // ─── Edit booking modal ───────────────────────────────────────────────────────
 
 interface EditForm {
-  status:    DbBookingStatus
   startDate: string
   endDate:   string
   notes:     string
@@ -141,7 +209,6 @@ interface EditModalProps {
 
 function EditBookingModal({ open, booking, onClose, onSave }: EditModalProps) {
   const [form,   setForm]   = useState<EditForm>({
-    status:    booking.status,
     startDate: booking.start_date,
     endDate:   booking.end_date,
     notes:     booking.notes ?? '',
@@ -151,7 +218,7 @@ function EditBookingModal({ open, booking, onClose, onSave }: EditModalProps) {
 
   useEffect(() => {
     if (open) {
-      setForm({ status: booking.status, startDate: booking.start_date, endDate: booking.end_date, notes: booking.notes ?? '' })
+      setForm({ startDate: booking.start_date, endDate: booking.end_date, notes: booking.notes ?? '' })
       setErrors({})
     }
   }, [open, booking])
@@ -199,17 +266,6 @@ function EditBookingModal({ open, booking, onClose, onSave }: EditModalProps) {
           </div>
         )}
 
-        <Select
-          id="eb-status"
-          label="Status"
-          value={form.status}
-          onChange={e => setField('status', e.target.value as DbBookingStatus)}
-        >
-          {SELECTABLE_STATUSES.map(s => (
-            <option key={s.value} value={s.value}>{s.label}</option>
-          ))}
-        </Select>
-
         <div className="grid grid-cols-2 gap-4">
           <Input
             id="eb-start"
@@ -254,50 +310,96 @@ interface PetSpaceSelectProps {
 }
 
 function PetSpaceSelect({ bp, spaces, booking, onChanged }: PetSpaceSelectProps) {
-  const [saving,     setSaving]     = useState(false)
-  const [spaceError, setSpaceError] = useState<string | null>(null)
+  const [saving,      setSaving]      = useState(false)
+  const [spaceError,  setSpaceError]  = useState<string | null>(null)
+  const [occupancyMap, setOccupancyMap] = useState<Map<string, number>>(new Map())
 
   const currentAssignment = bp.booking_space_assignments[0] ?? null
   const currentSpaceId    = currentAssignment?.space?.id ?? ''
   const petSpeciesId      = bp.pet?.species?.id ?? ''
   const petSpeciesName    = bp.pet?.species?.name ?? ''
 
-  // Filter to species-compatible spaces only (show all if species unknown)
-  const compatibleSpaces = spaces.filter(s =>
-    !petSpeciesId ||
-    s.accommodation_space_species.some(ss => ss.species_id === petSpeciesId)
+  // Fetch how many OTHER confirmed/active bookings occupy each space for these dates.
+  // Excludes the current booking so the already-assigned space isn't shown as unavailable.
+  useEffect(() => {
+    supabase
+      .from('bookings')
+      .select('id, booking_pets(booking_space_assignments(id, space_id))')
+      .in('status', ['confirmed', 'checked_in', 'due_out'])
+      .neq('id', booking.id)
+      .lte('start_date', booking.end_date)
+      .gte('end_date', booking.start_date)
+      .then(({ data }) => {
+        const map = new Map<string, number>()
+        for (const b of data ?? []) {
+          for (const bpRow of (b as any).booking_pets ?? []) {
+            for (const sa of bpRow.booking_space_assignments ?? []) {
+              map.set(sa.space_id, (map.get(sa.space_id) ?? 0) + 1)
+            }
+          }
+        }
+        setOccupancyMap(map)
+      })
+  }, [booking.start_date, booking.end_date, currentAssignment?.id])
+
+  const speciesMatch = (s: SpaceWithSpecies) =>
+    !petSpeciesId || s.accommodation_space_species.some(ss => ss.species_id === petSpeciesId)
+
+  const compatibleSpaces   = spaces.filter(s =>  speciesMatch(s))
+  const incompatibleSpaces = spaces.filter(s => !speciesMatch(s))
+
+  const availableSpaces    = compatibleSpaces.filter(s =>
+    s.id === currentSpaceId || (occupancyMap.get(s.id) ?? 0) < s.max_pets
   )
-  const incompatibleSpaces = spaces.filter(s =>
-    petSpeciesId &&
-    !s.accommodation_space_species.some(ss => ss.species_id === petSpeciesId)
+  const fullyBookedSpaces  = compatibleSpaces.filter(s =>
+    s.id !== currentSpaceId && (occupancyMap.get(s.id) ?? 0) >= s.max_pets
   )
 
-  // Group by area
   const spacesByArea = useMemo(() => {
     const groups = new Map<string, { areaName: string; spaces: SpaceWithSpecies[] }>()
-    for (const s of compatibleSpaces) {
+    for (const s of availableSpaces) {
       const areaId   = s.area?.id   ?? '__none'
       const areaName = s.area?.name ?? 'Ungrouped'
       if (!groups.has(areaId)) groups.set(areaId, { areaName, spaces: [] })
       groups.get(areaId)!.spaces.push(s)
     }
     return [...groups.values()]
-  }, [compatibleSpaces])
+  }, [availableSpaces])
 
   async function handleChange(newSpaceId: string) {
-    // Validate species compatibility
+    setSpaceError(null)
+
+    // Species compatibility check
     if (newSpaceId && petSpeciesId) {
       const space = spaces.find(s => s.id === newSpaceId)
+      if (space && !speciesMatch(space)) {
+        setSpaceError(`${space.name} does not accept ${petSpeciesName}. Choose a compatible space.`)
+        return
+      }
+    }
+
+    // Occupancy check — re-query at save time for freshness
+    if (newSpaceId) {
+      const space = spaces.find(s => s.id === newSpaceId)
       if (space) {
-        const ok = space.accommodation_space_species.some(ss => ss.species_id === petSpeciesId)
-        if (!ok) {
-          setSpaceError(`${space.name} does not accept ${petSpeciesName}. Choose a compatible space.`)
+        let query = supabase
+          .from('booking_space_assignments')
+          .select('id')
+          .eq('space_id', newSpaceId)
+          .lte('start_date', booking.end_date)
+          .gte('end_date', booking.start_date)
+        if (currentAssignment) {
+          query = query.neq('id', currentAssignment.id)
+        }
+        const { data: existing } = await query
+        if ((existing?.length ?? 0) >= space.max_pets) {
+          setSpaceError(`${space.name} is already fully booked for these dates.`)
           return
         }
       }
     }
+
     setSaving(true)
-    setSpaceError(null)
     try {
       if (currentAssignment) {
         if (newSpaceId) {
@@ -325,6 +427,16 @@ function PetSpaceSelect({ bp, spaces, booking, onChanged }: PetSpaceSelectProps)
           })
         if (error) throw new Error(error.message)
       }
+      const prevSpaceName = currentAssignment?.space?.name ?? null
+      const newSpaceName  = newSpaceId ? (spaces.find(s => s.id === newSpaceId)?.name ?? null) : null
+      await logAudit(booking.business_id, {
+        action:      'space_assignment.changed',
+        entity_type: 'booking',
+        entity_id:   booking.id,
+        before: { space: prevSpaceName },
+        after:  { space: newSpaceName },
+        meta:   { pet_name: bp.pet?.name ?? null },
+      })
       onChanged()
     } catch (err) {
       setSpaceError(err instanceof Error ? err.message : 'Failed to update space')
@@ -355,6 +467,13 @@ function PetSpaceSelect({ bp, spaces, booking, onChanged }: PetSpaceSelectProps)
               ))}
             </optgroup>
           ))}
+          {fullyBookedSpaces.length > 0 && (
+            <optgroup label="⚠ Already booked these dates">
+              {fullyBookedSpaces.map(s => (
+                <option key={s.id} value={s.id} disabled>{s.name}</option>
+              ))}
+            </optgroup>
+          )}
           {incompatibleSpaces.length > 0 && (
             <optgroup label="⚠ Incompatible species">
               {incompatibleSpaces.map(s => (
@@ -381,6 +500,552 @@ function PetSpaceSelect({ bp, spaces, booking, onChanged }: PetSpaceSelectProps)
 
 // ─── BookingDetailPage ────────────────────────────────────────────────────────
 
+// Statuses where the booking has not yet reached an operational event
+const PRE_EVENT_STATUSES = new Set<DbBookingStatus>([
+  'enquiry', 'confirmed', 'waiting_list', 'details_outstanding', 'ready',
+])
+
+function StatusActionBar({
+  booking,
+  actionLoading,
+  confirmCancel,
+  confirmBlocked,
+  canCancel,
+  onCheckIn,
+  onCheckOut,
+  onConfirm,
+  onToWaitingList,
+  onCancelRequest,
+  onCancelConfirm,
+  onCancelAbort,
+  onRestore,
+  onRecheckIn,
+}: {
+  booking:         BookingDetail
+  actionLoading:   'check_in' | 'check_out' | 'cancel' | 'restore' | 'recheckin' | 'confirm' | 'waiting_list' | null
+  confirmCancel:   boolean
+  confirmBlocked:  boolean
+  canCancel?:      boolean
+  onCheckIn:       () => void
+  onCheckOut:      () => void
+  onConfirm:       () => void
+  onToWaitingList: () => void
+  onCancelRequest: () => void
+  onCancelConfirm: () => void
+  onCancelAbort:   () => void
+  onRestore:       () => void
+  onRecheckIn:     () => void
+}) {
+  const { status } = booking
+
+  if (status === 'checked_out') {
+    return (
+      <div className="flex flex-wrap items-center gap-2 mt-4 mb-4">
+        <Button
+          variant="secondary"
+          icon={<Undo2 className="w-4 h-4" />}
+          onClick={onRecheckIn}
+          loading={actionLoading === 'recheckin'}
+        >
+          Re-check in
+        </Button>
+      </div>
+    )
+  }
+
+  if (status === 'cancelled') {
+    return (
+      <div className="flex flex-wrap items-center gap-2 mt-4 mb-4">
+        <Button
+          variant="secondary"
+          icon={<Undo2 className="w-4 h-4" />}
+          onClick={onRestore}
+          loading={actionLoading === 'restore'}
+        >
+          Restore booking
+        </Button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 mt-4 mb-4">
+      {(status === 'checked_in' || status === 'due_out') && (
+        <Button
+          icon={<LogOut className="w-4 h-4" />}
+          onClick={onCheckOut}
+          loading={actionLoading === 'check_out'}
+        >
+          Check out
+        </Button>
+      )}
+
+      {(PRE_EVENT_STATUSES.has(status) && status !== 'waiting_list' && status !== 'enquiry') && (
+        <Button
+          icon={<LogIn className="w-4 h-4" />}
+          onClick={onCheckIn}
+          loading={actionLoading === 'check_in'}
+        >
+          Check in
+        </Button>
+      )}
+
+      {(status === 'enquiry' || status === 'waiting_list') && (
+        <Button
+          variant="secondary"
+          icon={<CheckCircle className="w-4 h-4" />}
+          onClick={onConfirm}
+          loading={actionLoading === 'confirm'}
+          disabled={confirmBlocked}
+          title={confirmBlocked ? 'Resolve critical issues above before confirming' : undefined}
+        >
+          Confirm booking
+        </Button>
+      )}
+
+      {status === 'enquiry' && (
+        <Button
+          variant="secondary"
+          icon={<Users className="w-4 h-4" />}
+          onClick={onToWaitingList}
+          loading={actionLoading === 'waiting_list'}
+        >
+          Waiting list
+        </Button>
+      )}
+
+      {canCancel !== false && (!confirmCancel ? (
+        <Button
+          variant="secondary"
+          icon={<Ban className="w-4 h-4" />}
+          onClick={onCancelRequest}
+          className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
+        >
+          Cancel booking
+        </Button>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-600">Cancel this booking?</span>
+          <Button
+            variant="danger"
+            onClick={onCancelConfirm}
+            loading={actionLoading === 'cancel'}
+          >
+            Yes, cancel
+          </Button>
+          <Button variant="secondary" onClick={onCancelAbort} disabled={actionLoading === 'cancel'}>
+            Keep
+          </Button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─── CheckInModal ─────────────────────────────────────────────────────────────
+
+type PetNoteState = { feeding: string; medication: string; feedsPerDay: number }
+
+function CheckItem({ ok, label, href }: { ok: boolean; label: string; href?: string }) {
+  const icon = ok
+    ? <CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+    : <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0" />
+  return (
+    <div className="flex items-center gap-2.5 py-1">
+      {icon}
+      <span className={`text-sm flex-1 ${ok ? 'text-slate-700' : 'text-amber-700'}`}>{label}</span>
+      {!ok && href && (
+        <Link to={href} className="text-xs font-medium text-amber-600 hover:underline flex-shrink-0">
+          Update →
+        </Link>
+      )}
+    </div>
+  )
+}
+
+function CheckInModal({ open, booking, onClose, onConfirm }: {
+  open:      boolean
+  booking:   BookingDetail
+  onClose:   () => void
+  onConfirm: (petNotes: Record<string, PetNoteState>) => Promise<void>
+}) {
+  const [petNotes, setPetNotes] = useState<Record<string, PetNoteState>>({})
+  const [handover, setHandover] = useState<Record<string, boolean>>({})
+  const [saving,   setSaving]   = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    const notes: Record<string, PetNoteState> = {}
+    for (const bp of booking.booking_pets) {
+      notes[bp.id] = {
+        feeding:     bp.feeding_instructions ?? bp.pet?.feeding_instructions ?? '',
+        medication:  bp.medication_notes ?? '',
+        feedsPerDay: bp.feeds_per_day ?? bp.pet?.feeds_per_day ?? 2,
+      }
+    }
+    setPetNotes(notes)
+    setHandover({})
+    setSaving(false)
+  }, [open, booking])
+
+  const today = new Date().toISOString().split('T')[0]
+  const dateWarning = today < booking.start_date
+    ? `Checking in early — booking starts ${formatBookingDate(booking.start_date)}`
+    : today > booking.start_date
+    ? `Late check-in — booking was due ${formatBookingDate(booking.start_date)}`
+    : null
+
+  const owner = booking.owner
+  const ownerChecks = [
+    { label: 'Emergency contact', ok: !!(owner?.emergency_contact_name && owner?.emergency_contact_phone), href: owner ? `/owners/${owner.id}` : undefined },
+  ]
+
+  // Per-pet health warnings split by severity
+  const criticalHealthWarnings = booking.booking_pets.flatMap(bp => {
+    const pet = bp.pet; if (!pet) return []
+    return [
+      !pet.vaccinations.some(v => v.is_verified)                              && `${pet.name}: no verified vaccinations`,
+      (!pet.flea_treatment_date || daysSince(pet.flea_treatment_date) > 30)   && `${pet.name}: flea treatment ${!pet.flea_treatment_date ? 'not recorded' : 'overdue'}`,
+      (!pet.worming_treatment_date || daysSince(pet.worming_treatment_date) > 90) && `${pet.name}: worming ${!pet.worming_treatment_date ? 'not recorded' : 'overdue'}`,
+    ].filter((v): v is string => !!v)
+  })
+
+  const totalAdvisoryWarnings = [
+    ...ownerChecks.filter(c => !c.ok),
+    ...booking.booking_pets.flatMap(bp => {
+      const pet = bp.pet; if (!pet) return []
+      return [
+        (!pet.vet_practice_name && !pet.vet_phone),
+        !pet.microchip_number,
+      ].filter(Boolean)
+    }),
+  ].length
+
+  const handoverItems = [
+    { key: 'feeding',   label: 'Feeding instructions confirmed with owner' },
+    { key: 'meds',      label: 'Medication discussed with owner' },
+    { key: 'behaviour', label: 'Behaviour / temperament noted' },
+    { key: 'consents',  label: 'Consents (placeholder)' },
+    { key: 'payment',   label: 'Payment arranged (placeholder)' },
+  ]
+
+  async function handleConfirm() {
+    setSaving(true)
+    try { await onConfirm(petNotes) } finally { setSaving(false) }
+  }
+
+  function setPetField(bpId: string, field: keyof PetNoteState, value: string | number) {
+    setPetNotes(prev => ({ ...prev, [bpId]: { ...prev[bpId], [field]: value } }))
+  }
+
+  const ownerName = owner ? `${owner.first_name} ${owner.last_name}` : 'Unknown owner'
+  const petNames  = booking.booking_pets.map(bp => bp.pet?.name).filter(Boolean).join(', ')
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Check in — ${ownerName}`}
+      size="lg"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button onClick={handleConfirm} loading={saving} icon={<LogIn className="w-4 h-4" />}>
+            Complete check-in
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-5">
+        {petNames && (
+          <p className="text-sm text-slate-500">Pets: <span className="font-medium text-slate-700">{petNames}</span></p>
+        )}
+
+        {dateWarning && (
+          <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <p className="text-sm text-amber-800 font-medium">{dateWarning}</p>
+          </div>
+        )}
+
+        {booking.booking_pets.some(bp => bp.pet && !bp.pet.can_mix_with_others) && (
+          <div className="rounded-lg bg-rose-50 border border-rose-300 px-3.5 py-2.5 flex items-start gap-2.5">
+            <Ban className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-rose-800">
+                {booking.booking_pets.filter(bp => bp.pet && !bp.pet.can_mix_with_others).map(bp => bp.pet!.name).join(', ')}
+                {' '}cannot mix with other animals
+              </p>
+              <p className="text-xs text-rose-700 mt-0.5">Ensure separate accommodation and exercise times for this stay.</p>
+            </div>
+          </div>
+        )}
+
+        {criticalHealthWarnings.length > 0 && (
+          <div className="rounded-lg bg-rose-50 border border-rose-200 px-3.5 py-2.5">
+            <p className="text-sm font-semibold text-rose-800 mb-1.5 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+              Health records need attention — check in is still allowed
+            </p>
+            <ul className="space-y-0.5">
+              {criticalHealthWarnings.map((w, i) => (
+                <li key={i} className="text-sm text-rose-700">• {w}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {totalAdvisoryWarnings > 0 && (
+          <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <p className="text-sm text-amber-800 font-medium">
+              {totalAdvisoryWarnings} detail{totalAdvisoryWarnings !== 1 ? 's' : ''} worth noting
+            </p>
+          </div>
+        )}
+
+        {/* Owner details */}
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Owner details</p>
+          <div className="rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-1">
+            {ownerChecks.map(c => <CheckItem key={c.label} {...c} />)}
+          </div>
+        </div>
+
+        {/* Per-pet sections */}
+        {booking.booking_pets.map(bp => {
+          const pet = bp.pet
+          if (!pet) return null
+          const hasVet    = !!(pet.vet_practice_name || pet.vet_phone)
+          const hasVax    = pet.vaccinations.some(v => v.is_verified)
+          const fleaDays  = pet.flea_treatment_date ? daysSince(pet.flea_treatment_date) : null
+          const wormDays  = pet.worming_treatment_date ? daysSince(pet.worming_treatment_date) : null
+          const fleaOk    = fleaDays !== null && fleaDays <= 30
+          const wormOk    = wormDays !== null && wormDays <= 90
+          const fleaAgo   = fleaDays === 0 ? 'today' : `${fleaDays}d ago`
+          const wormAgo   = wormDays === 0 ? 'today' : `${wormDays}d ago`
+          const fleaLabel = !pet.flea_treatment_date
+            ? 'Flea treatment — no record'
+            : fleaOk
+              ? `Flea up to date${pet.flea_treatment_product ? ` — ${pet.flea_treatment_product}` : ''} (${fleaAgo})`
+              : `Flea treatment overdue${pet.flea_treatment_product ? ` — ${pet.flea_treatment_product}` : ''} (${fleaAgo})`
+          const wormLabel = !pet.worming_treatment_date
+            ? 'Worming — no record'
+            : wormOk
+              ? `Worming up to date${pet.worming_treatment_product ? ` — ${pet.worming_treatment_product}` : ''} (${wormAgo})`
+              : `Worming overdue${pet.worming_treatment_product ? ` — ${pet.worming_treatment_product}` : ''} (${wormAgo})`
+          const advisoryChecks = [
+            { label: hasVet ? `Vet — ${pet.vet_practice_name ?? pet.vet_phone}` : 'Vet details not recorded', ok: hasVet, href: `/pets/${pet.id}` },
+            { label: pet.microchip_number ? `Microchipped — ${pet.microchip_number}` : 'Microchip not recorded', ok: !!pet.microchip_number, href: `/pets/${pet.id}` },
+            { label: hasVax ? 'Vaccinations verified' : 'Vaccinations not verified', ok: hasVax, href: `/pets/${pet.id}` },
+            { label: fleaLabel, ok: fleaOk, href: `/pets/${pet.id}` },
+            { label: wormLabel, ok: wormOk, href: `/pets/${pet.id}` },
+          ]
+          const notes = petNotes[bp.id] ?? { feeding: '', medication: '', feedsPerDay: 2 }
+          return (
+            <div key={bp.id}>
+              <div className="flex items-center gap-2 mb-1.5">
+                <div
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-sm select-none flex-shrink-0"
+                  style={{ backgroundColor: pet.species?.colour ? `${pet.species.colour}20` : '#f1f5f9' }}
+                >
+                  {pet.species?.icon ?? '🐾'}
+                </div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">{pet.name}</p>
+              </div>
+
+              <div className="rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-1 mb-3">
+                {advisoryChecks.map(c => <CheckItem key={c.label} {...c} />)}
+              </div>
+
+              {pet.behaviour_notes && (
+                <div className="mb-3 rounded-lg bg-sky-50 border border-sky-100 px-3 py-2">
+                  <p className="text-xs font-semibold text-sky-600 mb-0.5">Behaviour notes</p>
+                  <p className="text-sm text-sky-900 whitespace-pre-wrap">{pet.behaviour_notes}</p>
+                </div>
+              )}
+
+              <div className="mb-3">
+                <label className="text-xs font-medium text-slate-600 block mb-1.5">
+                  Feeds per day <span className="font-normal text-slate-400">(this stay)</span>
+                </label>
+                <div className="flex gap-2">
+                  {([1, 2, 3, 4] as const).map(n => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setPetField(bp.id, 'feedsPerDay', n)}
+                      className={[
+                        'flex-1 py-1.5 rounded-lg text-sm font-medium border transition-colors',
+                        notes.feedsPerDay === n
+                          ? 'bg-emerald-600 border-emerald-600 text-white'
+                          : 'bg-white border-slate-300 text-slate-700 hover:border-emerald-400',
+                      ].join(' ')}
+                    >
+                      {n}×
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 block mb-1">
+                    Feeding instructions <span className="font-normal text-slate-400">(this stay)</span>
+                  </label>
+                  <textarea
+                    value={notes.feeding}
+                    onChange={e => setPetField(bp.id, 'feeding', e.target.value)}
+                    rows={3}
+                    placeholder={pet.feeding_instructions ?? 'None recorded on pet profile'}
+                    className="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-transparent placeholder:text-slate-300"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 block mb-1">
+                    Medication notes <span className="font-normal text-slate-400">(this stay)</span>
+                  </label>
+                  <textarea
+                    value={notes.medication}
+                    onChange={e => setPetField(bp.id, 'medication', e.target.value)}
+                    rows={3}
+                    placeholder={pet.medical_notes ?? 'None recorded on pet profile'}
+                    className="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-transparent placeholder:text-slate-300"
+                  />
+                </div>
+              </div>
+            </div>
+          )
+        })}
+
+        {/* Handover checklist */}
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Handover checklist</p>
+          <div className="space-y-2">
+            {handoverItems.map(item => (
+              <label key={item.key} className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={!!handover[item.key]}
+                  onChange={e => setHandover(prev => ({ ...prev, [item.key]: e.target.checked }))}
+                  className="w-4 h-4 rounded border-slate-300 accent-emerald-600 flex-shrink-0"
+                />
+                <span className={`text-sm ${handover[item.key] ? 'line-through text-slate-400' : 'text-slate-700'}`}>
+                  {item.label}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── CheckOutModal ─────────────────────────────────────────────────────────────
+
+function CheckOutModal({ open, booking, onClose, onConfirm }: {
+  open:      boolean
+  booking:   BookingDetail
+  onClose:   () => void
+  onConfirm: () => Promise<void>
+}) {
+  const [handover, setHandover] = useState<Record<string, boolean>>({})
+  const [saving,   setSaving]   = useState(false)
+
+  useEffect(() => { if (open) { setHandover({}); setSaving(false) } }, [open])
+
+  const today = new Date().toISOString().split('T')[0]
+  const dateWarning = today < booking.end_date
+    ? `Checking out early — booking ends ${formatBookingDate(booking.end_date)}`
+    : today > booking.end_date
+    ? `Overdue check-out — booking ended ${formatBookingDate(booking.end_date)}`
+    : null
+
+  const handoverItems = [
+    { key: 'payment',    label: 'Payment confirmed (placeholder)' },
+    { key: 'belongings', label: 'Owner collected all belongings' },
+    { key: 'meds',       label: 'Medication / food returned to owner' },
+  ]
+
+  async function handleConfirm() {
+    setSaving(true)
+    try { await onConfirm() } finally { setSaving(false) }
+  }
+
+  const owner    = booking.owner
+  const ownerName = owner ? `${owner.first_name} ${owner.last_name}` : 'Unknown owner'
+  const pets     = booking.booking_pets.map(bp => bp.pet).filter(Boolean)
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Check out — ${ownerName}`}
+      size="sm"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button onClick={handleConfirm} loading={saving} icon={<LogOut className="w-4 h-4" />}>
+            Complete check-out
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {dateWarning && (
+          <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <p className="text-sm text-amber-800 font-medium">{dateWarning}</p>
+          </div>
+        )}
+
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Pets leaving</p>
+          <div className="flex flex-wrap gap-2">
+            {pets.map(pet => pet && (
+              <div
+                key={pet.id}
+                className="flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium border border-slate-200 bg-slate-50"
+              >
+                <span>{pet.species?.icon ?? '🐾'}</span>
+                {pet.name}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Cost summary</p>
+          <div className="rounded-lg bg-slate-50 border border-slate-100 px-3.5 py-3">
+            <BookingPricingSummary bookingId={booking.id} />
+          </div>
+        </div>
+
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Handover</p>
+          <div className="space-y-2">
+            {handoverItems.map(item => (
+              <label key={item.key} className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={!!handover[item.key]}
+                  onChange={e => setHandover(prev => ({ ...prev, [item.key]: e.target.checked }))}
+                  className="w-4 h-4 rounded border-slate-300 accent-emerald-600 flex-shrink-0"
+                />
+                <span className={`text-sm ${handover[item.key] ? 'line-through text-slate-400' : 'text-slate-700'}`}>
+                  {item.label}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Source labels ─────────────────────────────────────────────────────────────
+
 const SOURCE_LABELS: Record<string, string> = {
   phone:    'Phone',
   walk_in:  'Walk-in',
@@ -392,14 +1057,21 @@ const SOURCE_LABELS: Record<string, string> = {
 export default function BookingDetailPage() {
   const { id }   = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
+  const { staffUser, isAdmin } = useBusinessContext()
+  const canDestruct = isAdmin || canDestructiveAction(staffUser?.role ?? 'read_only')
 
-  const [booking,       setBooking]       = useState<BookingDetail | null>(null)
-  const [spaces,        setSpaces]        = useState<SpaceWithSpecies[]>([])
-  const [loading,       setLoading]       = useState(true)
-  const [notFound,      setNotFound]      = useState(false)
-  const [editOpen,      setEditOpen]      = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [deleting,      setDeleting]      = useState(false)
+  const [booking,        setBooking]        = useState<BookingDetail | null>(null)
+  const [spaces,         setSpaces]         = useState<SpaceWithSpecies[]>([])
+  const [loading,        setLoading]        = useState(true)
+  const [notFound,       setNotFound]       = useState(false)
+  const [editOpen,       setEditOpen]       = useState(false)
+  const [confirmDelete,  setConfirmDelete]  = useState(false)
+  const [deleting,       setDeleting]       = useState(false)
+  const [actionLoading,  setActionLoading]  = useState<'check_in' | 'check_out' | 'cancel' | 'restore' | 'recheckin' | 'confirm' | 'waiting_list' | null>(null)
+  const [confirmCancel,  setConfirmCancel]  = useState(false)
+  const [checkInOpen,    setCheckInOpen]    = useState(false)
+  const [checkOutOpen,   setCheckOutOpen]   = useState(false)
 
   async function load() {
     if (!id) return
@@ -408,22 +1080,26 @@ export default function BookingDetailPage() {
       supabase
         .from('bookings')
         .select(`
-          id, business_id, status, start_date, end_date, notes, source, created_at,
+          id, business_id, status, start_date, end_date, notes, source, created_at, checked_in_at, checked_out_at,
           owner:owner_id (
             id, first_name, last_name, phone, email,
             address_line1, city,
             emergency_contact_name, emergency_contact_phone
           ),
           booking_pets (
-            id,
+            id, feeding_instructions, medication_notes, notes, feeds_per_day,
             pet:pet_id (
-              id, name, breed,
+              id, name, breed, size, can_mix_with_others, feeds_per_day,
+              behaviour_notes, feeding_instructions, medical_notes,
               vet_practice_name, vet_phone, microchip_number,
-              species:species_id ( id, name, icon, colour )
+              flea_treatment_date, flea_treatment_product,
+              worming_treatment_date, worming_treatment_product,
+              species:species_id ( id, name, icon, colour ),
+              vaccinations ( id, is_verified )
             ),
             booking_space_assignments (
               id,
-              space:space_id ( id, name )
+              space:space_id ( id, name, area_id )
             )
           )
         `)
@@ -447,18 +1123,91 @@ export default function BookingDetailPage() {
 
   useEffect(() => { load() }, [id])
 
+  // Auto-open modals when navigated here from the operations board
+  useEffect(() => {
+    if (!booking || loading) return
+    const state = location.state as any
+    if (state?.autoCheckin) {
+      setCheckInOpen(true)
+      navigate(location.pathname, { replace: true, state: {} })
+    } else if (state?.autoCheckout) {
+      setCheckOutOpen(true)
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  }, [location.state, booking, loading])
+
   async function handleEdit(form: EditForm) {
     if (!booking) return
+
+    // If dates changed and the booking has space assignments, check for conflicts
+    const datesChanged = form.startDate !== booking.start_date || form.endDate !== booking.end_date
+    if (datesChanged) {
+      const ownAssignmentIds: string[] = []
+      const spaceCountMap = new Map<string, number>()
+      for (const bp of booking.booking_pets) {
+        for (const sa of bp.booking_space_assignments) {
+          if (!sa.space?.id) continue
+          ownAssignmentIds.push(sa.id)
+          spaceCountMap.set(sa.space.id, (spaceCountMap.get(sa.space.id) ?? 0) + 1)
+        }
+      }
+      if (spaceCountMap.size > 0) {
+        // Query active bookings (excluding this one) that overlap the new date range,
+        // drilling down to their space assignments. Natural direction avoids join ambiguity.
+        const { data: conflicting } = await supabase
+          .from('bookings')
+          .select('id, booking_pets(booking_space_assignments(space_id))')
+          .in('status', ['confirmed', 'checked_in', 'due_out'])
+          .neq('id', booking.id)
+          .lte('start_date', form.endDate)
+          .gte('end_date', form.startDate)
+        const otherCounts = new Map<string, number>()
+        for (const b of conflicting ?? []) {
+          for (const bp of (b as any).booking_pets ?? []) {
+            for (const sa of bp.booking_space_assignments ?? []) {
+              if (spaceCountMap.has(sa.space_id)) {
+                otherCounts.set(sa.space_id, (otherCounts.get(sa.space_id) ?? 0) + 1)
+              }
+            }
+          }
+        }
+        for (const [spaceId, ownCount] of spaceCountMap) {
+          const space = spaces.find(s => s.id === spaceId)
+          if (!space) continue
+          if ((otherCounts.get(spaceId) ?? 0) + ownCount > space.max_pets) {
+            throw new Error(`"${space.name}" is fully booked for those dates. Choose different dates or reassign the space first.`)
+          }
+        }
+      }
+    }
+
     const { error } = await supabase
       .from('bookings')
       .update({
-        status:     form.status,
         start_date: form.startDate,
         end_date:   form.endDate,
         notes:      form.notes.trim() || null,
       })
       .eq('id', booking.id)
     if (error) throw new Error(error.message)
+
+    // Keep space assignment dates in sync with the booking dates
+    const bookingPetIds = booking.booking_pets.map(bp => bp.id)
+    if (bookingPetIds.length > 0) {
+      const { error: saErr } = await supabase
+        .from('booking_space_assignments')
+        .update({ start_date: form.startDate, end_date: form.endDate })
+        .in('booking_pet_id', bookingPetIds)
+      if (saErr) throw new Error(saErr.message)
+    }
+
+    await logAudit(booking.business_id, {
+      action:      'booking.updated',
+      entity_type: 'booking',
+      entity_id:   booking.id,
+      before: { start_date: booking.start_date, end_date: booking.end_date, notes: booking.notes },
+      after:  { start_date: form.startDate,      end_date: form.endDate,      notes: form.notes.trim() || null },
+    })
     await load()
   }
 
@@ -475,7 +1224,155 @@ export default function BookingDetailPage() {
     navigate('/bookings')
   }
 
-  const missingItems = useMemo(() => booking ? computeMissing(booking) : [], [booking])
+  async function handleCheckIn() {
+    setCheckInOpen(true)
+  }
+
+  async function handleCheckInConfirm(petNotes: Record<string, PetNoteState>) {
+    if (!booking) return
+    for (const [bpId, notes] of Object.entries(petNotes)) {
+      await supabase
+        .from('booking_pets')
+        .update({
+          feeding_instructions: notes.feeding.trim() || null,
+          medication_notes:     notes.medication.trim() || null,
+          feeds_per_day:        notes.feedsPerDay,
+        })
+        .eq('id', bpId)
+    }
+    const wasCheckedOut = booking.status === 'checked_out'
+    const { error } = await supabase
+      .from('bookings')
+      .update({
+        status:         'checked_in',
+        checked_in_at:  new Date().toISOString(),
+        ...(wasCheckedOut ? { checked_out_at: null } : {}),
+      })
+      .eq('id', booking.id)
+    if (error) throw new Error(error.message)
+    await logAudit(booking.business_id, {
+      action:      'booking.checked_in',
+      entity_type: 'booking',
+      entity_id:   booking.id,
+      before: { status: booking.status },
+      after:  { status: 'checked_in' },
+    })
+    setCheckInOpen(false)
+    await load()
+  }
+
+  async function handleCheckOut() {
+    setCheckOutOpen(true)
+  }
+
+  async function handleCheckOutConfirm() {
+    if (!booking) return
+    const { error } = await supabase
+      .from('bookings')
+      .update({ status: 'checked_out', checked_out_at: new Date().toISOString() })
+      .eq('id', booking.id)
+    if (error) throw new Error(error.message)
+    await logAudit(booking.business_id, {
+      action:      'booking.checked_out',
+      entity_type: 'booking',
+      entity_id:   booking.id,
+      before: { status: booking.status },
+      after:  { status: 'checked_out' },
+    })
+    setCheckOutOpen(false)
+    await load()
+  }
+
+  async function handleConfirm() {
+    if (!booking) return
+    if (missingItems.critical.length > 0) return  // blocked — CriticalPanel explains why
+    setActionLoading('confirm')
+    const prevStatus = booking.status
+    const { error } = await supabase
+      .from('bookings')
+      .update({ status: 'confirmed' })
+      .eq('id', booking.id)
+    setActionLoading(null)
+    if (error) { alert(error.message); return }
+    await logAudit(booking.business_id, {
+      action:      'booking.status_changed',
+      entity_type: 'booking',
+      entity_id:   booking.id,
+      before: { status: prevStatus },
+      after:  { status: 'confirmed' },
+    })
+    await load()
+  }
+
+  async function handleToWaitingList() {
+    if (!booking) return
+    setActionLoading('waiting_list')
+    const prevStatus = booking.status
+    const { error } = await supabase
+      .from('bookings')
+      .update({ status: 'waiting_list' })
+      .eq('id', booking.id)
+    setActionLoading(null)
+    if (error) { alert(error.message); return }
+    await logAudit(booking.business_id, {
+      action:      'booking.status_changed',
+      entity_type: 'booking',
+      entity_id:   booking.id,
+      before: { status: prevStatus },
+      after:  { status: 'waiting_list' },
+    })
+    await load()
+  }
+
+  async function handleCancel() {
+    if (!booking) return
+    setActionLoading('cancel')
+    const prevStatus = booking.status
+    const { error } = await supabase
+      .from('bookings')
+      .update({ status: 'cancelled' })
+      .eq('id', booking.id)
+    setActionLoading(null)
+    setConfirmCancel(false)
+    if (error) { alert(error.message); return }
+    await logAudit(booking.business_id, {
+      action:      'booking.status_changed',
+      entity_type: 'booking',
+      entity_id:   booking.id,
+      before: { status: prevStatus },
+      after:  { status: 'cancelled' },
+    })
+    await load()
+  }
+
+  async function handleRecheckIn() {
+    setCheckInOpen(true)
+  }
+
+  async function handleRestore() {
+    if (!booking) return
+    setActionLoading('restore')
+    const prevStatus = booking.status
+    const { error } = await supabase
+      .from('bookings')
+      .update({ status: 'enquiry' })
+      .eq('id', booking.id)
+    setActionLoading(null)
+    if (error) { alert(error.message); return }
+    await logAudit(booking.business_id, {
+      action:      'booking.status_changed',
+      entity_type: 'booking',
+      entity_id:   booking.id,
+      before: { status: prevStatus },
+      after:  { status: 'enquiry' },
+    })
+    await load()
+  }
+
+  const missingItems = useMemo(
+    () => booking ? computeMissing(booking) : { critical: [], advisory: [] },
+    [booking],
+  )
 
   if (loading) {
     return <div className="max-w-2xl px-5 py-8 text-sm text-slate-400 text-center">Loading…</div>
@@ -490,9 +1387,13 @@ export default function BookingDetailPage() {
     )
   }
 
-  const ref     = `#${booking.id.slice(0, 8).toUpperCase()}`
-  const owner   = booking.owner
-  const nights  = nightsBetween(booking.start_date, booking.end_date)
+  const ref           = `#${booking.id.slice(0, 8).toUpperCase()}`
+  const owner         = booking.owner
+  const nights        = nightsBetween(booking.start_date, booking.end_date)
+  const displayStatus = computeDisplayStatus(
+    booking.status,
+    missingItems.critical.length + missingItems.advisory.length > 0,
+  )
 
   return (
     <div className="max-w-2xl">
@@ -516,22 +1417,44 @@ export default function BookingDetailPage() {
               >
                 Edit
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                icon={<Trash2 className="w-3.5 h-3.5" />}
-                onClick={() => setConfirmDelete(true)}
-                className="text-red-500 border-red-200 hover:bg-red-50 hover:border-red-300"
-              >
-                Delete
-              </Button>
+              {canDestruct && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<Trash2 className="w-3.5 h-3.5" />}
+                  onClick={() => setConfirmDelete(true)}
+                  className="text-red-500 border-red-200 hover:bg-red-50 hover:border-red-300"
+                >
+                  Delete
+                </Button>
+              )}
             </div>
           )
         }
       />
 
-      {/* Missing info attention panel */}
-      <AttentionPanel items={missingItems} />
+      {/* Health compliance blocks (vaccinations, flea, worm) */}
+      <CriticalPanel items={missingItems.critical} />
+      {/* Advisory notes (emergency contact, vet, microchip) */}
+      <AdvisoryPanel items={missingItems.advisory} />
+
+      {/* Status action bar */}
+      <StatusActionBar
+        booking={booking}
+        actionLoading={actionLoading}
+        confirmCancel={confirmCancel}
+        confirmBlocked={missingItems.critical.length > 0}
+        canCancel={canDestruct}
+        onCheckIn={handleCheckIn}
+        onCheckOut={handleCheckOut}
+        onConfirm={handleConfirm}
+        onToWaitingList={handleToWaitingList}
+        onCancelRequest={() => setConfirmCancel(true)}
+        onCancelConfirm={handleCancel}
+        onCancelAbort={() => setConfirmCancel(false)}
+        onRestore={handleRestore}
+        onRecheckIn={handleRecheckIn}
+      />
 
       {/* Booking summary */}
       <Card>
@@ -540,7 +1463,7 @@ export default function BookingDetailPage() {
 
           <div className="flex gap-4 py-1.5">
             <dt className="text-sm text-slate-500 w-36 flex-shrink-0">Status</dt>
-            <dd><StatusBadge status={dbStatusToUi(booking.status)} size="md" /></dd>
+            <dd><StatusBadge status={dbStatusToUi(displayStatus)} size="md" /></dd>
           </div>
 
           <div className="flex gap-4 py-1.5">
@@ -672,6 +1595,12 @@ export default function BookingDetailPage() {
 
                     {/* Health/records status icons */}
                     <div className="flex-shrink-0 flex flex-col gap-1 items-end pt-0.5">
+                      {!pet.can_mix_with_others && (
+                        <span className="flex items-center gap-1 text-xs font-medium text-rose-600">
+                          <Ban className="w-3.5 h-3.5" />
+                          No mixing
+                        </span>
+                      )}
                       {pet.vet_practice_name || pet.vet_phone ? (
                         <span className="flex items-center gap-1 text-xs text-emerald-600">
                           <CheckCircle className="w-3.5 h-3.5" />
@@ -703,12 +1632,54 @@ export default function BookingDetailPage() {
         </div>
       )}
 
+      {/* Pricing */}
+      <div className="mt-4">
+        <Card>
+          <SectionHeader title="Charges" />
+          <BookingPricing
+            bookingId={booking.id}
+            startDate={booking.start_date}
+            endDate={booking.end_date}
+            pets={booking.booking_pets.map(bp => ({
+              id:  bp.id,
+              pet: bp.pet ? {
+                id:         bp.pet.id,
+                name:       bp.pet.name,
+                size:       bp.pet.size,
+                species_id: bp.pet.species?.id ?? null,
+              } : null,
+              booking_space_assignments: bp.booking_space_assignments,
+            }))}
+          />
+        </Card>
+      </div>
+
+      <AuditLog entityId={booking.id} />
+
       <EditBookingModal
         open={editOpen}
         booking={booking}
         onClose={() => setEditOpen(false)}
         onSave={handleEdit}
       />
+
+      {checkInOpen && (
+        <CheckInModal
+          open={checkInOpen}
+          booking={booking}
+          onClose={() => setCheckInOpen(false)}
+          onConfirm={handleCheckInConfirm}
+        />
+      )}
+
+      {checkOutOpen && (
+        <CheckOutModal
+          open={checkOutOpen}
+          booking={booking}
+          onClose={() => setCheckOutOpen(false)}
+          onConfirm={handleCheckOutConfirm}
+        />
+      )}
     </div>
   )
 }

@@ -16,10 +16,19 @@ import BrandingPage from '@/pages/settings/BrandingPage'
 import SpeciesPage from '@/pages/settings/SpeciesPage'
 import AccommodationPage from '@/pages/settings/AccommodationPage'
 import BookableSpacesPage from '@/pages/settings/BookableSpacesPage'
+import VaccinationTypesPage from '@/pages/settings/VaccinationTypesPage'
+import PricingPage from '@/pages/settings/PricingPage'
+import PlanPage from '@/pages/settings/PlanPage'
+import StaffPage from '@/pages/settings/StaffPage'
+import RequireRole from '@/components/auth/RequireRole'
+import OnboardingPage from '@/pages/OnboardingPage'
+import JoinPage from '@/pages/JoinPage'
+import AdminPage from '@/pages/AdminPage'
 import OwnerDetailPage from '@/pages/OwnerDetailPage'
 import PetDetailPage from '@/pages/PetDetailPage'
 import BookingsPage from '@/pages/BookingsPage'
 import BookingDetailPage from '@/pages/BookingDetailPage'
+import OperationsPage from '@/pages/OperationsPage'
 
 export default function App() {
   return (
@@ -29,11 +38,17 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route element={<RequireAuth />}>
+              <Route path="/onboarding" element={<OnboardingPage />} />
+              <Route path="/join"       element={<JoinPage />} />
+              <Route path="/admin"      element={<AdminPage />} />
+            </Route>
+            <Route element={<RequireAuth />}>
               <Route element={<RequireBusiness />}>
                 <Route element={<AppShell />}>
                   <Route path="/" element={<Navigate to="/calendar" replace />} />
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/calendar" element={<CalendarPage />} />
+                  <Route path="/operations" element={<OperationsPage />} />
                   <Route path="/bookings" element={<BookingsPage />} />
                   <Route path="/bookings/:id" element={<BookingDetailPage />} />
                   <Route path="/owners" element={<OwnersPage />} />
@@ -41,12 +56,22 @@ export default function App() {
                   <Route path="/pets/:id" element={<PetDetailPage />} />
                   <Route path="/pets" element={<PetsPage />} />
                   <Route path="/spaces" element={<SpacesPage />} />
-                  <Route path="/settings" element={<SettingsPage />} />
-                  <Route path="/settings/business" element={<BusinessDetailsPage />} />
-                  <Route path="/settings/branding" element={<BrandingPage />} />
-                  <Route path="/settings/species" element={<SpeciesPage />} />
-                  <Route path="/settings/accommodation" element={<AccommodationPage />} />
-                  <Route path="/settings/accommodation/spaces" element={<BookableSpacesPage />} />
+                  {/* Settings — owner or manager only */}
+                  <Route element={<RequireRole allowed={['owner', 'manager']} />}>
+                    <Route path="/settings" element={<SettingsPage />} />
+                    <Route path="/settings/business" element={<BusinessDetailsPage />} />
+                    <Route path="/settings/branding" element={<BrandingPage />} />
+                    <Route path="/settings/species" element={<SpeciesPage />} />
+                    <Route path="/settings/accommodation" element={<AccommodationPage />} />
+                    <Route path="/settings/accommodation/spaces" element={<BookableSpacesPage />} />
+                    <Route path="/settings/vaccination-types" element={<VaccinationTypesPage />} />
+                    <Route path="/settings/pricing" element={<PricingPage />} />
+                    <Route path="/settings/plan"    element={<PlanPage />} />
+                  </Route>
+                  {/* Staff management — owner only */}
+                  <Route element={<RequireRole allowed={['owner']} />}>
+                    <Route path="/settings/staff" element={<StaffPage />} />
+                  </Route>
                 </Route>
               </Route>
             </Route>

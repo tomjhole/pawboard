@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { CheckCircle2, ImageIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { Input, Button, PageHeader, Card } from '@/components/ui'
+import { Input, Button, PageHeader, Card, PlanGate } from '@/components/ui'
+import { usePlan } from '@/lib/plans'
 
 interface FormValues {
   logoUrl:         string
@@ -122,6 +123,8 @@ function Section({ title, description, children }: {
 
 export default function BrandingPage() {
   const { business, theme, reload } = useBusinessContext()
+  const { can } = usePlan()
+  const canCustomBranding = can('customBranding')
 
   const [form, setForm] = useState<FormValues>(() => toForm(theme))
   const [saving, setSaving] = useState(false)
@@ -246,34 +249,44 @@ export default function BrandingPage() {
           </div>
         </Section>
 
-        <Section
-          title="Colours"
-          description="Changes are previewed live — click Save to make them permanent"
-        >
-          <div className="space-y-5">
-            <ColourField
-              id="primary_colour"
-              label="Primary colour"
-              hint="Used for the logo, buttons, and active navigation. Choose your main brand colour."
-              value={form.primaryColour}
-              onChange={setColour('primaryColour')}
+        {canCustomBranding ? (
+          <Section
+            title="Colours"
+            description="Changes are previewed live — click Save to make them permanent"
+          >
+            <div className="space-y-5">
+              <ColourField
+                id="primary_colour"
+                label="Primary colour"
+                hint="Used for the logo, buttons, and active navigation. Choose your main brand colour."
+                value={form.primaryColour}
+                onChange={setColour('primaryColour')}
+              />
+              <ColourField
+                id="secondary_colour"
+                label="Secondary colour"
+                hint="Used for headings and strong text in branded areas."
+                value={form.secondaryColour}
+                onChange={setColour('secondaryColour')}
+              />
+              <ColourField
+                id="accent_colour"
+                label="Accent colour"
+                hint="Used for highlights and today indicators on the calendar."
+                value={form.accentColour}
+                onChange={setColour('accentColour')}
+              />
+            </div>
+          </Section>
+        ) : (
+          <Card padding="lg">
+            <h3 className="text-sm font-semibold text-slate-900 mb-3">Colours</h3>
+            <PlanGate
+              feature="Custom brand colours"
+              requiredPlan="PawBoard Professional"
             />
-            <ColourField
-              id="secondary_colour"
-              label="Secondary colour"
-              hint="Used for headings and strong text in branded areas."
-              value={form.secondaryColour}
-              onChange={setColour('secondaryColour')}
-            />
-            <ColourField
-              id="accent_colour"
-              label="Accent colour"
-              hint="Used for highlights and today indicators on the calendar."
-              value={form.accentColour}
-              onChange={setColour('accentColour')}
-            />
-          </div>
-        </Section>
+          </Card>
+        )}
 
         {/* Guardrails — be explicit about what is NOT customisable */}
         <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 text-xs text-slate-500 space-y-1">

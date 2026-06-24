@@ -1,6 +1,5 @@
 export type BookingStatus =
   | 'enquiry'
-  | 'provisional'
   | 'confirmed'
   | 'details-outstanding'
   | 'ready'
@@ -19,7 +18,6 @@ interface StatusConfig {
 
 const statusConfig: Record<BookingStatus, StatusConfig> = {
   'enquiry':             { label: 'Enquiry',             classes: 'bg-slate-100 text-slate-600',     dot: 'bg-slate-400' },
-  'provisional':         { label: 'Provisional',         classes: 'bg-blue-50 text-blue-700',        dot: 'bg-blue-400' },
   'confirmed':           { label: 'Confirmed',           classes: 'bg-emerald-50 text-emerald-700',  dot: 'bg-emerald-500' },
   'details-outstanding': { label: 'Details outstanding', classes: 'bg-amber-50 text-amber-700',      dot: 'bg-amber-500' },
   'ready':               { label: 'Ready for arrival',   classes: 'bg-teal-50 text-teal-700',        dot: 'bg-teal-500' },

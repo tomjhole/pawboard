@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { Plus, Trash2, PawPrint } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { PageHeader, Card, Button, Input, Modal, EmptyState } from '@/components/ui'
+import { PageHeader, Card, Button, Input, Modal, EmptyState, PlanGate } from '@/components/ui'
+import { usePlan } from '@/lib/plans'
 import type { Database } from '@/types/database'
 
 type Species = Database['public']['Tables']['species']['Row']
@@ -343,13 +344,22 @@ function AddSpeciesModal({
 
 export default function SpeciesPage() {
   const { business } = useBusinessContext()
+  const { can, within, limit } = usePlan()
+
   const [species, setSpecies] = useState<Species[]>([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
 
-  const systemSpecies = species.filter(s => s.is_system_default)
-  const customSpecies  = species.filter(s => !s.is_system_default)
-  const existingNames  = species.map(s => s.name.toLowerCase())
+  const systemSpecies   = species.filter(s => s.is_system_default)
+  const customSpecies   = species.filter(s => !s.is_system_default)
+  const existingNames   = species.map(s => s.name.toLowerCase())
+
+  // Diary: no custom species at all
+  // Professional: up to maxCustomSpecies (2)
+  // Premium: unlimited
+  const canAnyCustom    = can('customSpecies')
+  const canAddCustomSpecies = canAnyCustom && within('maxCustomSpecies', customSpecies.length)
+  const customSpeciesLimit  = limit('maxCustomSpecies')
 
   async function load() {
     setLoading(true)
@@ -408,12 +418,14 @@ export default function SpeciesPage() {
         description="Configure which species your business accepts for boarding"
         backHref="/settings"
         action={
-          <Button
-            icon={<Plus className="w-4 h-4" />}
-            onClick={() => setShowAdd(true)}
-          >
-            Add species
-          </Button>
+          canAnyCustom && canAddCustomSpecies ? (
+            <Button
+              icon={<Plus className="w-4 h-4" />}
+              onClick={() => setShowAdd(true)}
+            >
+              Add species
+            </Button>
+          ) : undefined
         }
       />
 
@@ -438,12 +450,24 @@ export default function SpeciesPage() {
 
         {/* Custom species */}
         <Card padding="none">
-          <div className="px-5 pt-4 pb-2">
+          <div className="px-5 pt-4 pb-2 flex items-center justify-between">
             <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
               Your species
             </h3>
+            {canAnyCustom && customSpeciesLimit !== 'Unlimited' && (
+              <span className="text-xs text-slate-400">
+                {customSpecies.length} / {customSpeciesLimit} used
+              </span>
+            )}
           </div>
-          {loading ? (
+          {!canAnyCustom ? (
+            <div className="px-5 pb-5">
+              <PlanGate
+                feature="Custom species (rabbits, birds, reptiles and more)"
+                requiredPlan="PawBoard Professional"
+              />
+            </div>
+          ) : loading ? (
             <div className="px-5 py-6 text-sm text-slate-400">Loading…</div>
           ) : customSpecies.length === 0 ? (
             <EmptyState
@@ -451,26 +475,39 @@ export default function SpeciesPage() {
               title="No custom species added yet"
               description="Add species beyond dogs and cats, such as rabbits, birds, reptiles or any other animals you board."
               action={
-                <Button
-                  variant="secondary"
-                  icon={<Plus className="w-4 h-4" />}
-                  onClick={() => setShowAdd(true)}
-                >
-                  Add species
-                </Button>
+                canAddCustomSpecies ? (
+                  <Button
+                    variant="secondary"
+                    icon={<Plus className="w-4 h-4" />}
+                    onClick={() => setShowAdd(true)}
+                  >
+                    Add species
+                  </Button>
+                ) : undefined
               }
             />
           ) : (
-            <ul className="divide-y divide-slate-100">
-              {customSpecies.map(s => (
-                <SpeciesRow
-                  key={s.id}
-                  species={s}
-                  onToggle={handleToggle}
-                  onDelete={handleDelete}
-                />
-              ))}
-            </ul>
+            <>
+              <ul className="divide-y divide-slate-100">
+                {customSpecies.map(s => (
+                  <SpeciesRow
+                    key={s.id}
+                    species={s}
+                    onToggle={handleToggle}
+                    onDelete={handleDelete}
+                  />
+                ))}
+              </ul>
+              {!canAddCustomSpecies && (
+                <div className="px-5 py-4 border-t border-slate-100">
+                  <PlanGate
+                    feature={`More than ${customSpeciesLimit} custom species`}
+                    requiredPlan="PawBoard Premium"
+                    limitHit
+                  />
+                </div>
+              )}
+            </>
           )}
         </Card>
       </div>

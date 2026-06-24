@@ -1,10 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { Pencil, Trash2, AlertCircle, CheckCircle } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { PageHeader, Card, Button } from '@/components/ui'
 import { PetModal, buildPetPayload, SIZE_LABELS, type PetWithRelations, type PetForm } from '@/pages/PetsPage'
+import { VaccinationsSection } from '@/components/VaccinationsSection'
+import { AuditLog } from '@/components/AuditLog'
+import { logAudit } from '@/lib/audit'
+import { canDestructiveAction } from '@/lib/roles'
 import type { Database } from '@/types/database'
 
 type Owner   = Database['public']['Tables']['owners']['Row']
@@ -24,16 +28,6 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
   )
 }
 
-function NoteBlock({ label, value }: { label: string; value?: string | null }) {
-  if (!value) return null
-  return (
-    <>
-      <hr className="border-slate-100 my-4" />
-      <SectionHeader title={label} />
-      <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{value}</p>
-    </>
-  )
-}
 
 function formatDob(iso: string): string {
   try {
@@ -43,6 +37,18 @@ function formatDob(iso: string): string {
   } catch {
     return iso
   }
+}
+
+function daysSince(iso: string): number {
+  const today = new Date(); today.setHours(12, 0, 0, 0)
+  return Math.round((today.getTime() - new Date(iso + 'T12:00:00').getTime()) / 86400000)
+}
+
+function treatmentAge(iso: string): string {
+  const d = daysSince(iso)
+  if (d === 0) return 'today'
+  if (d < 0)   return 'future date'
+  return `${d} day${d !== 1 ? 's' : ''} ago`
 }
 
 function calcAge(iso: string): string {
@@ -60,21 +66,26 @@ function calcAge(iso: string): string {
 export default function PetDetailPage() {
   const { id }   = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { business } = useBusinessContext()
+  const { business, staffUser, isAdmin } = useBusinessContext()
+  const canDestruct = isAdmin || canDestructiveAction(staffUser?.role ?? 'read_only')
 
   const [pet,          setPet]          = useState<PetWithRelations | null>(null)
   const [owners,       setOwners]       = useState<Pick<Owner, 'id' | 'first_name' | 'last_name'>[]>([])
   const [allSpecies,   setAllSpecies]   = useState<Species[]>([])
-  const [loading,      setLoading]      = useState(true)
-  const [notFound,     setNotFound]     = useState(false)
-  const [editOpen,     setEditOpen]     = useState(false)
+  const [knownBreeds,  setKnownBreeds]  = useState<string[]>([])
+  const [loading,       setLoading]       = useState(true)
+  const [notFound,      setNotFound]      = useState(false)
+  const [editOpen,      setEditOpen]      = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [deleting,     setDeleting]     = useState(false)
+  const [deleting,      setDeleting]      = useState(false)
+  const [vaxIssueCount, setVaxIssueCount] = useState(0)
+
+  const handleVaxCount = useCallback((n: number) => setVaxIssueCount(n), [])
 
   async function load() {
     if (!id) return
     setLoading(true)
-    const [petRes, ownersRes, speciesRes] = await Promise.all([
+    const [petRes, ownersRes, speciesRes, breedsRes] = await Promise.all([
       supabase
         .from('pets')
         .select(`
@@ -86,6 +97,7 @@ export default function PetDetailPage() {
         .single(),
       supabase.from('owners').select('id, first_name, last_name').order('last_name').order('first_name'),
       supabase.from('species').select('*').order('is_system_default', { ascending: false }).order('sort_order').order('name'),
+      supabase.from('pets').select('breed').not('breed', 'is', null).order('breed'),
     ])
     if (petRes.error || !petRes.data) {
       setNotFound(true)
@@ -94,6 +106,10 @@ export default function PetDetailPage() {
     }
     setOwners(ownersRes.data ?? [])
     setAllSpecies(speciesRes.data ?? [])
+    const breeds = [...new Set(
+      (breedsRes.data ?? []).map((r: any) => r.breed as string).filter(Boolean)
+    )].sort()
+    setKnownBreeds(breeds)
     setLoading(false)
   }
 
@@ -106,6 +122,12 @@ export default function PetDetailPage() {
       .update(buildPetPayload(form))
       .eq('id', petId)
     if (error) throw new Error(error.message)
+    await logAudit(business!.id, {
+      action:      'pet.updated',
+      entity_type: 'pet',
+      entity_id:   petId,
+      after: { name: form.name },
+    })
     await load()
   }
 
@@ -147,6 +169,13 @@ export default function PetDetailPage() {
 
   const sexLabel: Record<string, string> = { male: 'Male', female: 'Female', unknown: 'Unknown' }
 
+  const treatmentIssueCount = (() => {
+    let n = 0
+    if (!pet.flea_treatment_date    || daysSince(pet.flea_treatment_date)    > 30) n++
+    if (!pet.worming_treatment_date || daysSince(pet.worming_treatment_date) > 90) n++
+    return n
+  })()
+
   return (
     <div className="max-w-2xl">
       <PageHeader
@@ -161,17 +190,31 @@ export default function PetDetailPage() {
             </div>
           ) : (
             <div className="flex items-center gap-2">
+              {treatmentIssueCount > 0 && (
+                <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  {treatmentIssueCount} treatment issue{treatmentIssueCount !== 1 ? 's' : ''}
+                </span>
+              )}
+              {vaxIssueCount > 0 && (
+                <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  {vaxIssueCount} vax issue{vaxIssueCount !== 1 ? 's' : ''}
+                </span>
+              )}
               <Button variant="secondary" size="sm" icon={<Pencil className="w-3.5 h-3.5" />} onClick={() => setEditOpen(true)}>
                 Edit
               </Button>
-              <Button
-                variant="secondary" size="sm"
-                icon={<Trash2 className="w-3.5 h-3.5" />}
-                onClick={() => setConfirmDelete(true)}
-                className="text-red-500 border-red-200 hover:bg-red-50 hover:border-red-300"
-              >
-                Delete
-              </Button>
+              {canDestruct && (
+                <Button
+                  variant="secondary" size="sm"
+                  icon={<Trash2 className="w-3.5 h-3.5" />}
+                  onClick={() => setConfirmDelete(true)}
+                  className="text-red-500 border-red-200 hover:bg-red-50 hover:border-red-300"
+                >
+                  Delete
+                </Button>
+              )}
             </div>
           )
         }
@@ -181,6 +224,39 @@ export default function PetDetailPage() {
       {pet.photo_url && (
         <div className="mb-5 rounded-xl overflow-hidden">
           <img src={pet.photo_url} alt={pet.name} className="w-full h-52 object-cover" />
+        </div>
+      )}
+
+      {/* Care notes — shown first as day-to-day operational info */}
+      {(pet.feeding_instructions || pet.behaviour_notes || pet.medical_notes) && (
+        <div className="mb-5">
+        <Card>
+          <SectionHeader title="Care notes" />
+          {pet.feeding_instructions && (
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Feeding instructions</p>
+              <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{pet.feeding_instructions}</p>
+            </div>
+          )}
+          {pet.behaviour_notes && (
+            <>
+              {pet.feeding_instructions && <hr className="border-slate-100 my-4" />}
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Behaviour notes</p>
+                <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{pet.behaviour_notes}</p>
+              </div>
+            </>
+          )}
+          {pet.medical_notes && (
+            <>
+              {(pet.feeding_instructions || pet.behaviour_notes) && <hr className="border-slate-100 my-4" />}
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Medical notes</p>
+                <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{pet.medical_notes}</p>
+              </div>
+            </>
+          )}
+        </Card>
         </div>
       )}
 
@@ -270,10 +346,45 @@ export default function PetDetailPage() {
             </>
           )}
 
-          {/* Care notes */}
-          <NoteBlock label="Medical notes"       value={pet.medical_notes} />
-          <NoteBlock label="Behaviour notes"     value={pet.behaviour_notes} />
-          <NoteBlock label="Feeding instructions" value={pet.feeding_instructions} />
+          {/* Preventive treatments */}
+          {(pet.flea_treatment_date || pet.worming_treatment_date) && (
+            <>
+              <hr className="border-slate-100 my-4" />
+              <SectionHeader title="Preventive treatments" />
+              {pet.flea_treatment_date && (
+                <div className="flex gap-4 py-1.5">
+                  <dt className="text-sm text-slate-500 w-44 flex-shrink-0">Flea treatment</dt>
+                  <dd className="text-sm text-slate-900">
+                    {new Date(pet.flea_treatment_date + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    <span className={[
+                      'ml-2 text-xs',
+                      daysSince(pet.flea_treatment_date) > 90 ? 'text-rose-500' :
+                      daysSince(pet.flea_treatment_date) > 30 ? 'text-amber-600' : 'text-slate-400',
+                    ].join('')}>({treatmentAge(pet.flea_treatment_date)})</span>
+                    {pet.flea_treatment_product && (
+                      <span className="ml-2 text-slate-500">— {pet.flea_treatment_product}</span>
+                    )}
+                  </dd>
+                </div>
+              )}
+              {pet.worming_treatment_date && (
+                <div className="flex gap-4 py-1.5">
+                  <dt className="text-sm text-slate-500 w-44 flex-shrink-0">Worming</dt>
+                  <dd className="text-sm text-slate-900">
+                    {new Date(pet.worming_treatment_date + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    <span className={[
+                      'ml-2 text-xs',
+                      daysSince(pet.worming_treatment_date) > 90 ? 'text-rose-500' :
+                      daysSince(pet.worming_treatment_date) > 30 ? 'text-amber-600' : 'text-slate-400',
+                    ].join('')}>({treatmentAge(pet.worming_treatment_date)})</span>
+                    {pet.worming_treatment_product && (
+                      <span className="ml-2 text-slate-500">— {pet.worming_treatment_product}</span>
+                    )}
+                  </dd>
+                </div>
+              )}
+            </>
+          )}
 
           {/* Inactive warning */}
           {!pet.is_active && (
@@ -285,11 +396,20 @@ export default function PetDetailPage() {
         </dl>
       </Card>
 
+      <VaccinationsSection
+        petId={pet.id}
+        petSpeciesId={pet.species?.id ?? null}
+        onIssueCount={handleVaxCount}
+      />
+
+      <AuditLog entityId={pet.id} />
+
       <PetModal
         open={editOpen}
         initialPet={pet}
         owners={owners}
         allSpecies={allSpecies}
+        knownBreeds={knownBreeds}
         onClose={() => setEditOpen(false)}
         onSave={handleSave}
       />
