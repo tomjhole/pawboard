@@ -38,6 +38,7 @@ import PetDetailPage from '@/pages/PetDetailPage'
 import BookingsPage from '@/pages/BookingsPage'
 import BookingDetailPage from '@/pages/BookingDetailPage'
 import OperationsPage from '@/pages/OperationsPage'
+import ReportsPage from '@/pages/reports/ReportsPage'
 
 export default function App() {
   return (
@@ -71,6 +72,7 @@ export default function App() {
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/calendar" element={<CalendarPage />} />
                   <Route path="/operations" element={<OperationsPage />} />
+                  <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/bookings" element={<BookingsPage />} />
                   <Route path="/bookings/:id" element={<BookingDetailPage />} />
                   <Route path="/owners" element={<OwnersPage />} />

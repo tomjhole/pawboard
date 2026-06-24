@@ -7,6 +7,7 @@ import {
   Users,
   PawPrint,
   Settings,
+  BarChart3,
   X,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
@@ -24,6 +25,7 @@ const mainNav = [
   { to: '/bookings',   label: 'Bookings',   icon: ClipboardList   },
   { to: '/owners',     label: 'Owners',     icon: Users           },
   { to: '/pets',       label: 'Pets',       icon: PawPrint        },
+  { to: '/reports',    label: 'Reports',    icon: BarChart3       },
 ]
 
 const navBase = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors'
