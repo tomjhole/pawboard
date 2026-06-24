@@ -15,7 +15,7 @@ export default function Select({ id, label, hint, error, className = '', childre
     'disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed',
     error
       ? 'border-red-400 focus:ring-red-400'
-      : 'border-slate-300 focus:ring-emerald-500 focus:border-transparent',
+      : 'border-slate-300 focus:ring-[color:var(--brand-primary)] focus:border-transparent',
     className,
   ].filter(Boolean).join(' ')
 

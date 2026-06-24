@@ -9,7 +9,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const variants: Record<string, string> = {
-  primary:   'btn-brand focus-visible:ring-emerald-500',
+  primary:   'btn-brand focus-visible:ring-[color:var(--brand-primary)]',
   secondary: 'bg-white text-slate-800 border border-slate-300 hover:bg-slate-50 focus-visible:ring-slate-400 disabled:text-slate-400 disabled:border-slate-200',
   ghost:     'text-slate-700 hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-slate-400 disabled:text-slate-400',
   danger:    'bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500 disabled:bg-red-300',

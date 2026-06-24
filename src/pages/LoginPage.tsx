@@ -19,7 +19,7 @@ function Field({
       <input
         id={id} type={type} value={value} onChange={e => onChange(e.target.value)}
         placeholder={placeholder} required autoComplete={autoComplete} disabled={disabled}
-        className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-shadow disabled:opacity-50 disabled:bg-slate-50"
+        className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[color:var(--brand-primary)] focus:border-transparent transition-shadow disabled:opacity-50 disabled:bg-slate-50"
       />
     </div>
   )
@@ -64,8 +64,10 @@ export default function LoginPage() {
       const { data: session, error } = await signUpWithEmail(email, password)
       if (error) { setError(error.message); setBusy(false); return }
       if (session) {
-        // Auto-confirmed — go straight to onboarding
-        navigate('/onboarding', { replace: true })
+        // Auto-confirmed. If they arrived from somewhere (e.g. a portal invite
+        // link), return them there; otherwise start staff onboarding.
+        const from = (location.state as any)?.from
+        navigate(from ? `${from.pathname}${from.search ?? ''}` : '/onboarding', { replace: true })
       } else {
         // Email confirmation required
         setSignedUp(true)
@@ -135,7 +137,7 @@ export default function LoginPage() {
                 )}
 
                 <button type="submit" disabled={busy}
-                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors mt-2 flex items-center justify-center gap-2">
+                  className="btn-brand w-full py-2.5 px-4 disabled:cursor-not-allowed text-sm font-medium rounded-lg transition-colors mt-2 flex items-center justify-center gap-2">
                   {busy ? (
                     <>
                       <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">

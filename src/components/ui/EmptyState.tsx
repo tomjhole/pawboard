@@ -17,7 +17,7 @@ export default function EmptyState({ icon, title, description, action }: EmptySt
       )}
       <p className="text-sm font-medium text-slate-700">{title}</p>
       {description && (
-        <p className="text-sm text-slate-400 mt-1.5 max-w-xs leading-relaxed">{description}</p>
+        <p className="text-sm text-slate-500 mt-1.5 max-w-xs leading-relaxed">{description}</p>
       )}
       {action && <div className="mt-5">{action}</div>}
     </div>
