@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, Trash2, Sparkles, Receipt } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
@@ -260,6 +260,17 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
   const [adhocItem,    setAdhocItem]    = useState<ExtrasCatalogItem | null>(null)
   const [totalSaved,   setTotalSaved]   = useState(false)
   const [currency,     setCurrency]     = useState('GBP')
+  const [catalogDropUp, setCatalogDropUp] = useState(false)
+  const catalogWrapRef = useRef<HTMLDivElement>(null)
+
+  function toggleCatalog() {
+    if (!catalogOpen) {
+      const rect = catalogWrapRef.current?.getBoundingClientRect()
+      // Open upward when there isn't room for the menu below the button
+      if (rect) setCatalogDropUp(window.innerHeight - rect.bottom < 300)
+    }
+    setCatalogOpen(v => !v)
+  }
 
   const total = items.reduce((s, i) => s + i.total_price, 0)
 
@@ -409,15 +420,18 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
           Custom charge
         </Button>
         {hasCatalog && (
-          <div className="relative">
+          <div className="relative" ref={catalogWrapRef}>
             <Button size="sm" variant="secondary" icon={<Plus className="w-3.5 h-3.5" />}
-              onClick={() => setCatalogOpen(v => !v)}>
+              onClick={toggleCatalog}>
               From catalog
             </Button>
             {catalogOpen && (
               <>
                 <div className="fixed inset-0 z-30" onClick={() => setCatalogOpen(false)} />
-                <div className="absolute left-0 top-full mt-1 z-40 min-w-48 rounded-lg shadow-lg border border-slate-200 bg-white py-1 max-h-64 overflow-y-auto">
+                <div className={[
+                  'absolute left-0 z-40 min-w-48 rounded-lg shadow-lg border border-slate-200 bg-white py-1 max-h-64 overflow-y-auto',
+                  catalogDropUp ? 'bottom-full mb-1' : 'top-full mt-1',
+                ].join(' ')}>
                   {catalog.map(item => {
                     const nights = nightsBetween(startDate, endDate)
                     const qty = item.charge_frequency === 'nightly' ? nights

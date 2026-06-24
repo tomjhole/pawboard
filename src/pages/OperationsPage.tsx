@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   LogIn, LogOut, AlertCircle, ShieldAlert, StickyNote, ChevronRight,
-  UtensilsCrossed, Dumbbell, Ban,
+  UtensilsCrossed, Dumbbell, Ban, MapPin,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
@@ -44,11 +44,24 @@ type OpOwner = {
   emergency_contact_phone: string | null
 }
 
+type OpSpace = {
+  name: string
+  sort_order: number
+  area: { name: string; sort_order: number } | null
+}
+
+type OpSpaceAssignment = {
+  start_date: string
+  end_date: string
+  space: OpSpace | null
+}
+
 type OpBookingPet = {
   id: string
   feeds_per_day: number | null
   feeding_instructions: string | null
   pet: OpPet | null
+  booking_space_assignments: OpSpaceAssignment[]
 }
 
 type OpBooking = {
@@ -88,6 +101,13 @@ const OP_SELECT = `
       worming_treatment_date, worming_treatment_product,
       species:species_id ( id, name, icon, colour ),
       vaccinations ( id, is_verified )
+    ),
+    booking_space_assignments (
+      start_date, end_date,
+      space:space_id (
+        name, sort_order,
+        area:area_id ( name, sort_order )
+      )
     )
   )
 `
@@ -386,25 +406,44 @@ const FEED_LABELS: Record<number, string[]> = {
   4: ['AM', 'Midday', 'PM', 'Eve'],
 }
 
+function spaceForDate(bp: OpBookingPet, date: string): OpSpace | null {
+  const a = bp.booking_space_assignments ?? []
+  const covering = a.find(x => x.start_date <= date && date <= x.end_date)
+  return (covering ?? a[0])?.space ?? null
+}
+
 function CareChecklist({
   bookings,
   careLog,
   careToggling,
   onToggle,
   dateRelation,
+  selectedDate,
 }: {
   bookings:     OpBooking[]
   careLog:      Set<string>
   careToggling: Set<string>
   onToggle:     (bookingPetId: string, careType: string) => void
   dateRelation: 'today' | 'past' | 'future'
+  selectedDate: string
 }) {
-  const rows: { booking: OpBooking; bp: OpBookingPet; pet: OpPet }[] = []
+  const rows: { booking: OpBooking; bp: OpBookingPet; pet: OpPet; space: OpSpace | null }[] = []
   for (const b of bookings) {
     for (const bp of b.booking_pets) {
-      if (bp.pet) rows.push({ booking: b, bp, pet: bp.pet })
+      if (bp.pet) rows.push({ booking: b, bp, pet: bp.pet, space: spaceForDate(bp, selectedDate) })
     }
   }
+
+  // Order by area, then space, then pet name — matches how staff walk the site
+  rows.sort((a, b) => {
+    const aArea = a.space?.area?.sort_order ?? Number.MAX_SAFE_INTEGER
+    const bArea = b.space?.area?.sort_order ?? Number.MAX_SAFE_INTEGER
+    if (aArea !== bArea) return aArea - bArea
+    const aSpace = a.space?.sort_order ?? Number.MAX_SAFE_INTEGER
+    const bSpace = b.space?.sort_order ?? Number.MAX_SAFE_INTEGER
+    if (aSpace !== bSpace) return aSpace - bSpace
+    return a.pet.name.localeCompare(b.pet.name)
+  })
 
   if (rows.length === 0) {
     return <p className="px-4 py-5 text-sm text-slate-400 italic text-center">No animals currently boarding</p>
@@ -424,71 +463,84 @@ function CareChecklist({
           You're editing a past day — changes are saved but staff won't be re-notified.
         </div>
       )}
-      {rows.map(({ booking, bp, pet }) => {
+      {rows.map(({ booking, bp, pet, space }) => {
         const feedCount    = bp.feeds_per_day ?? pet.feeds_per_day ?? 2
         const feedLabels   = FEED_LABELS[feedCount] ?? FEED_LABELS[2]
         const feedsDone    = feedLabels.filter((_, i) => careLog.has(`${bp.id}:feed_${i + 1}`)).length
         const exercised    = careLog.has(`${bp.id}:exercise`)
         const instructions = bp.feeding_instructions ?? pet.feeding_instructions
         const locked       = dateRelation === 'future'
+        const location     = space
+          ? [space.area?.name, space.name].filter(Boolean).join(' · ')
+          : null
 
         return (
           <div
             key={bp.id}
-            className="flex items-start gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0"
+            className="flex flex-col xl:flex-row xl:items-center gap-2 xl:gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0"
           >
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center text-base flex-shrink-0 border-2 border-white select-none mt-0.5"
-              style={{ backgroundColor: pet.species?.colour ? `${pet.species.colour}25` : '#f1f5f9' }}
-            >
-              {pet.species?.icon ?? '🐾'}
-            </div>
-
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-sm font-semibold text-slate-900">{pet.name}</span>
-                {!pet.can_mix_with_others && (
-                  <span className="inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-200">
-                    <Ban className="w-3 h-3" />
-                    No mixing
-                  </span>
-                )}
-                <span className="text-xs text-slate-400">{ownerName(booking)}</span>
+            {/* Pet + location */}
+            <div className="flex items-start gap-3 flex-1 min-w-0">
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-base flex-shrink-0 border-2 border-white select-none mt-0.5"
+                style={{ backgroundColor: pet.species?.colour ? `${pet.species.colour}25` : '#f1f5f9' }}
+              >
+                {pet.species?.icon ?? '🐾'}
               </div>
-              {instructions && (
-                <p className="text-xs text-slate-500 mt-0.5 truncate" title={instructions}>{instructions}</p>
-              )}
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-sm font-semibold text-slate-900">{pet.name}</span>
+                  {location && (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                      <MapPin className="w-3 h-3 flex-shrink-0" />
+                      {location}
+                    </span>
+                  )}
+                  {!pet.can_mix_with_others && (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-200">
+                      <Ban className="w-3 h-3" />
+                      No mixing
+                    </span>
+                  )}
+                  <span className="text-xs text-slate-400">{ownerName(booking)}</span>
+                </div>
+                {instructions && (
+                  <p className="text-xs text-slate-500 mt-0.5 truncate" title={instructions}>{instructions}</p>
+                )}
+              </div>
             </div>
 
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              <UtensilsCrossed className="w-3.5 h-3.5 text-slate-400 mr-0.5" />
-              {feedLabels.map((label, i) => {
-                const careType = `feed_${i + 1}`
-                const key      = `${bp.id}:${careType}`
-                const done     = careLog.has(key)
-                const busy     = careToggling.has(key)
-                return (
-                  <button
-                    key={label}
-                    onClick={() => !locked && onToggle(bp.id, careType)}
-                    disabled={busy || locked}
-                    title={locked ? 'Cannot mark future dates' : `${label} feed`}
-                    className={[
-                      'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border transition-colors',
-                      done
-                        ? 'bg-emerald-600 border-emerald-600 text-white'
-                        : 'bg-white border-slate-300 text-slate-500 hover:border-emerald-400 hover:text-emerald-700',
-                      busy || locked ? 'opacity-50 cursor-not-allowed' : '',
-                    ].join(' ')}
-                  >
-                    {done ? '✓' : '○'} {label}
-                  </button>
-                )
-              })}
-              <span className="text-xs text-slate-400 ml-1 tabular-nums">{feedsDone}/{feedCount}</span>
-            </div>
+            {/* Care controls — wrap below the pet info on smaller / tablet screens */}
+            <div className="flex flex-wrap items-center gap-1.5 pl-11 xl:pl-0 xl:flex-shrink-0 xl:justify-end">
+              <div className="flex items-center gap-1.5">
+                <UtensilsCrossed className="w-3.5 h-3.5 text-slate-400" />
+                {feedLabels.map((label, i) => {
+                  const careType = `feed_${i + 1}`
+                  const key      = `${bp.id}:${careType}`
+                  const done     = careLog.has(key)
+                  const busy     = careToggling.has(key)
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => !locked && onToggle(bp.id, careType)}
+                      disabled={busy || locked}
+                      title={locked ? 'Cannot mark future dates' : `${label} feed`}
+                      className={[
+                        'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border transition-colors',
+                        done
+                          ? 'bg-emerald-600 border-emerald-600 text-white'
+                          : 'bg-white border-slate-300 text-slate-500 hover:border-emerald-400 hover:text-emerald-700',
+                        busy || locked ? 'opacity-50 cursor-not-allowed' : '',
+                      ].join(' ')}
+                    >
+                      {done ? '✓' : '○'} {label}
+                    </button>
+                  )
+                })}
+                <span className="text-xs text-slate-400 ml-0.5 tabular-nums">{feedsDone}/{feedCount}</span>
+              </div>
 
-            <div className="flex items-center gap-1.5 flex-shrink-0">
               <button
                 onClick={() => !locked && onToggle(bp.id, 'exercise')}
                 disabled={careToggling.has(`${bp.id}:exercise`) || locked}
@@ -945,6 +997,7 @@ export default function OperationsPage() {
             careToggling={careToggling}
             onToggle={toggleCare}
             dateRelation={dateRelation}
+            selectedDate={selectedDate}
           />
         </Section>
       )}
