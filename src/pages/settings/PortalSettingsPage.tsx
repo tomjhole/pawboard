@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { Globe } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { PageHeader, Card } from '@/components/ui'
+import { usePlan } from '@/lib/plans'
+import { PageHeader, Card, PlanGate } from '@/components/ui'
 
 type PortalFields = {
   portal_enabled: boolean
@@ -48,6 +49,8 @@ function Row({ title, description, checked, disabled, onChange }: {
 
 export default function PortalSettingsPage() {
   const { business, settings, reload } = useBusinessContext()
+  const { can } = usePlan()
+  const canPortal = can('ownerPortal')
   const [fields, setFields] = useState<PortalFields | null>(null)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
 
@@ -85,6 +88,8 @@ export default function PortalSettingsPage() {
         backHref="/settings"
       />
 
+      {!canPortal && <PlanGate feature="Owner portal" requiredPlan="PawBoard Premium" className="mb-4" />}
+
       <Card padding="none">
         <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-100 bg-slate-50/60">
           <div className="flex items-start gap-3 min-w-0">
@@ -98,7 +103,7 @@ export default function PortalSettingsPage() {
               </p>
             </div>
           </div>
-          <Toggle checked={master} onChange={v => patch({ portal_enabled: v })} />
+          <Toggle checked={master} disabled={!canPortal} onChange={v => patch({ portal_enabled: v })} />
         </div>
 
         <div className="divide-y divide-slate-100">
@@ -106,21 +111,21 @@ export default function PortalSettingsPage() {
             title="Allow pet edits"
             description="Owners can update feeding, behaviour, medical, vet and insurance details for their pets."
             checked={fields.portal_allow_pet_edits}
-            disabled={!master}
+            disabled={!canPortal || !master}
             onChange={v => patch({ portal_allow_pet_edits: v })}
           />
           <Row
             title="Allow document uploads"
             description="Owners can upload vaccination certificates and other documents for staff to review."
             checked={fields.portal_allow_documents}
-            disabled={!master}
+            disabled={!canPortal || !master}
             onChange={v => patch({ portal_allow_documents: v })}
           />
           <Row
             title="Allow booking requests"
             description="Owners can request a stay. Requests arrive as enquiries for you to confirm."
             checked={fields.portal_allow_booking_requests}
-            disabled={!master}
+            disabled={!canPortal || !master}
             onChange={v => patch({ portal_allow_booking_requests: v })}
           />
         </div>

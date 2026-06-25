@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Check, X, Zap, Clock } from 'lucide-react'
+import { Check, X, Zap } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { PageHeader, Card } from '@/components/ui'
@@ -10,9 +10,8 @@ import { PLANS, type PlanId } from '@/lib/plans'
 type DbPricing = { plan_id: string; price_monthly: number; currency: string }
 
 type CellValue =
-  | { kind: 'bool';   value: boolean }
-  | { kind: 'text';   value: string }
-  | { kind: 'soon' }          // Premium gate, not yet built
+  | { kind: 'bool'; value: boolean }
+  | { kind: 'text'; value: string }
 
 type FeatureRow = {
   label:        string
@@ -25,57 +24,54 @@ type FeatureGroup = { heading: string; rows: FeatureRow[] }
 
 // ─── Feature matrix ───────────────────────────────────────────────────────────
 
-const bool  = (v: boolean): CellValue => ({ kind: 'bool', value: v })
-const text  = (v: string):  CellValue => ({ kind: 'text', value: v })
-const soon  = ():            CellValue => ({ kind: 'soon' })
+const bool = (v: boolean): CellValue => ({ kind: 'bool', value: v })
+const text = (v: string):  CellValue => ({ kind: 'text', value: v })
 
 const FEATURES: FeatureGroup[] = [
   {
     heading: 'Usage',
     rows: [
-      { label: 'Bookable spaces',      diary: text('5'),          professional: text('30'),        premium: text('Unlimited') },
-      { label: 'Accommodation areas',  diary: text('1'),          professional: text('10'),        premium: text('Unlimited') },
-      { label: 'Staff user accounts',  diary: text('1'),          professional: text('Unlimited'), premium: text('Unlimited') },
-      { label: 'Owner records',        diary: text('150'),        professional: text('Unlimited'), premium: text('Unlimited') },
-      { label: 'Custom species',       diary: text('None'),       professional: text('2'),         premium: text('Unlimited') },
+      { label: 'Bookable spaces',      diary: text('5'),    professional: text('30'),        premium: text('Unlimited') },
+      { label: 'Accommodation areas',  diary: text('1'),    professional: text('10'),        premium: text('Unlimited') },
+      { label: 'Staff user accounts',  diary: text('1'),    professional: text('Unlimited'), premium: text('Unlimited') },
+      { label: 'Owner records',        diary: text('150'),  professional: text('Unlimited'), premium: text('Unlimited') },
+      { label: 'Custom species',       diary: text('None'), professional: text('2'),         premium: text('Unlimited') },
     ],
   },
   {
-    heading: 'Booking & calendar',
+    heading: 'Booking & operations',
     rows: [
-      { label: 'Booking diary',        diary: bool(true),  professional: bool(true),  premium: bool(true)  },
-      { label: 'Calendar board',       diary: bool(true),  professional: bool(true),  premium: bool(true)  },
-      { label: 'Calendar filters',     diary: bool(false), professional: bool(true),  premium: bool(true)  },
-      { label: 'Occupancy view',       diary: bool(false), professional: bool(true),  premium: bool(true)  },
-      { label: 'Daily operations',     diary: bool(true),  professional: bool(true),  premium: bool(true)  },
-      { label: 'Pricing engine',       diary: bool(false), professional: bool(true),  premium: bool(true)  },
+      { label: 'Booking diary',          diary: bool(true),  professional: bool(true),  premium: bool(true) },
+      { label: 'Calendar board',         diary: bool(true),  professional: bool(true),  premium: bool(true) },
+      { label: 'Daily operations board', diary: bool(true),  professional: bool(true),  premium: bool(true) },
+      { label: 'Vaccination tracking',   diary: bool(true),  professional: bool(true),  premium: bool(true) },
+      { label: 'Audit history',          diary: bool(true),  professional: bool(true),  premium: bool(true) },
+      { label: 'Calendar filters',       diary: bool(false), professional: bool(true),  premium: bool(true) },
+      { label: 'Occupancy view',         diary: bool(false), professional: bool(true),  premium: bool(true) },
+      { label: 'Pricing engine',         diary: bool(false), professional: bool(true),  premium: bool(true) },
     ],
   },
   {
-    heading: 'Customisation',
+    heading: 'Branding',
     rows: [
-      { label: 'Logo',                 diary: bool(true),  professional: bool(true),  premium: bool(true)  },
-      { label: 'Brand colours',        diary: bool(false), professional: bool(true),  premium: bool(true)  },
+      { label: 'Logo upload',  diary: bool(true),  professional: bool(true), premium: bool(true) },
+      { label: 'Brand colours', diary: bool(false), professional: bool(true), premium: bool(true) },
     ],
   },
   {
-    heading: 'Online & payments',
+    heading: 'Owner experience',
     rows: [
-      { label: 'Online booking requests', diary: bool(false), professional: soon(),   premium: bool(true)  },
-      { label: 'Owner portal',            diary: bool(false), professional: soon(),   premium: bool(true)  },
-      { label: 'Stripe payments',         diary: bool(false), professional: bool(false), premium: bool(true) },
-      { label: 'Custom intake forms',     diary: bool(false), professional: soon(),   premium: bool(true)  },
+      { label: 'Owner portal',            diary: bool(false), professional: bool(false), premium: bool(true) },
+      { label: 'Online booking requests', diary: bool(false), professional: bool(false), premium: bool(true) },
+      { label: 'Stay Journal',            diary: bool(false), professional: bool(false), premium: bool(true) },
     ],
   },
   {
-    heading: 'Premium',
+    heading: 'Payments & reporting',
     rows: [
-      { label: 'Stay Journal',          diary: bool(false), professional: bool(false), premium: bool(true) },
-      { label: 'Advanced reporting',    diary: bool(false), professional: bool(false), premium: soon()     },
-      { label: 'Multiple locations',    diary: bool(false), professional: bool(false), premium: soon()     },
-      { label: 'Custom domain',         diary: bool(false), professional: bool(false), premium: soon()     },
-      { label: 'White labelling',       diary: bool(false), professional: bool(false), premium: soon()     },
-      { label: 'Advanced roles',        diary: bool(false), professional: bool(false), premium: soon()     },
+      { label: 'Reporting',                  diary: bool(false), professional: bool(true),  premium: bool(true) },
+      { label: 'Card payments (Stripe)',     diary: bool(false), professional: bool(false), premium: bool(true) },
+      { label: 'Advanced reports & export',  diary: bool(false), professional: bool(false), premium: bool(true) },
     ],
   },
 ]
@@ -111,14 +107,6 @@ function Cell({ value }: { value: CellValue }) {
     return value.value
       ? <Check className="w-4 h-4 text-emerald-500 mx-auto" />
       : <X    className="w-4 h-4 text-slate-200 mx-auto" />
-  }
-  if (value.kind === 'soon') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-        <Clock className="w-3 h-3" />
-        Soon
-      </span>
-    )
   }
   return <span className="text-sm font-medium text-slate-700">{value.value}</span>
 }
@@ -294,10 +282,6 @@ export default function PlanPage() {
           </table>
         </div>
 
-        <div className="px-5 py-3 border-t border-slate-100 flex items-center gap-2 text-xs text-slate-400">
-          <Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
-          Features marked "Soon" are in development and will be available on their respective plans at no extra cost.
-        </div>
       </Card>
 
       {/* Upgrade note */}

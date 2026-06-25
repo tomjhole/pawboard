@@ -89,7 +89,7 @@ export const PLANS: Record<PlanId, Plan> = {
     id:           'professional',
     name:         'PawBoard Professional',
     priceMonthly: 29,
-    description:  'For established kennels with staff, multiple areas and custom branding.',
+    description:  'For established kennels: staff accounts, pricing, occupancy and reporting.',
     limits: {
       maxSpaces:         30,
       maxAreas:          10,
@@ -103,16 +103,19 @@ export const PLANS: Record<PlanId, Plan> = {
       customBranding:    true,
       pricingEngine:     true,
 
-      onlineBooking:     false,  // coming soon
-      ownerPortal:       false,  // coming soon
-      customForms:       false,  // coming soon
-      stripePayments:    false,  // coming soon
-      stayJournal:       false,  // coming soon
-      advancedReporting: false,  // coming soon
-      multipleLocations: false,  // coming soon
-      customDomain:      false,  // coming soon
-      whiteLabelling:    false,  // coming soon
-      advancedRoles:     false,  // coming soon
+      // Owner-facing features live in Premium
+      onlineBooking:     false,  // Premium
+      ownerPortal:       false,  // Premium
+      stripePayments:    false,  // Premium
+      stayJournal:       false,  // Premium
+      advancedReporting: false,  // Premium (standard reporting is available)
+
+      // Not built yet — kept as flags for the future, not shown in plan descriptions
+      customForms:       false,
+      multipleLocations: false,
+      customDomain:      false,
+      whiteLabelling:    false,
+      advancedRoles:     false,
     },
   },
 
@@ -121,7 +124,7 @@ export const PLANS: Record<PlanId, Plan> = {
     id:           'premium',
     name:         'PawBoard Premium',
     priceMonthly: 69,
-    description:  'Everything. Unlimited spaces, Stripe, Stay Journal and advanced reporting.',
+    description:  'Take it online — owner portal, online bookings, Stay Journal, card payments and advanced reports.',
     limits: {
       maxSpaces:         null,
       maxAreas:          null,
@@ -137,14 +140,16 @@ export const PLANS: Record<PlanId, Plan> = {
 
       onlineBooking:     true,
       ownerPortal:       true,
-      customForms:       true,
       stripePayments:    true,
       stayJournal:       true,
       advancedReporting: true,
-      multipleLocations: true,
-      customDomain:      true,
-      whiteLabelling:    true,
-      advancedRoles:     true,
+
+      // Not built yet — kept as flags for the future, not shown in plan descriptions
+      customForms:       false,
+      multipleLocations: false,
+      customDomain:      false,
+      whiteLabelling:    false,
+      advancedRoles:     false,
     },
   },
 }
