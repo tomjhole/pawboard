@@ -168,6 +168,8 @@ begin
   -- 2. CLEAR DOWN  (child → parent so RESTRICT FKs never block us)
   -- ===========================================================================
   delete from audit_log;
+  if to_regclass('public.payments') is not null then delete from payments; end if;
+  if to_regclass('public.stay_journal_entries') is not null then delete from stay_journal_entries; end if;
   delete from daily_care_log;
   delete from daily_notes;
   delete from booking_line_items;
@@ -595,6 +597,26 @@ begin
     ('33330000-0000-0000-0000-000000000004', 'Bruno — Giant dog', 7, 35.00, 245.00, 'rate', 0),
     -- B15 Patel past: Rocky 7 nights
     ('33330000-0000-0000-0000-000000000015', 'Rocky — Large dog', 7, 25.00, 175.00, 'rate', 0);
+
+  -- ===========================================================================
+  -- 10b. PAYMENTS — back the deposit/balance flags with real ledger entries so
+  --      the booking's Payments panel matches the bookings-list status. Skipped
+  --      if the payments table hasn't been created yet (run the payments migration).
+  -- ===========================================================================
+  if to_regclass('public.payments') is not null then
+    -- a deposit payment for every booking flagged deposit_paid
+    insert into payments (business_id, booking_id, amount, method, kind, status, paid_at, created_by)
+    select v_biz, id, coalesce(deposit_amount, 0), 'cash', 'deposit', 'paid', created_at, v_uid
+    from bookings
+    where business_id = v_biz and deposit_paid and coalesce(deposit_amount, 0) > 0;
+
+    -- the remaining balance for fully-settled (checked-out) bookings
+    insert into payments (business_id, booking_id, amount, method, kind, status, paid_at, created_by)
+    select v_biz, id, coalesce(total_amount, 0) - coalesce(deposit_amount, 0), 'bank_transfer', 'balance', 'paid',
+           coalesce(checked_out_at, created_at), v_uid
+    from bookings
+    where business_id = v_biz and balance_paid and (coalesce(total_amount, 0) - coalesce(deposit_amount, 0)) > 0;
+  end if;
 
   -- ===========================================================================
   -- 11. OPERATIONS — daily handover note + today's care checklist (in progress)

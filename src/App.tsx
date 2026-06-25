@@ -11,6 +11,7 @@ import PortalPetsPage from '@/pages/portal/PortalPetsPage'
 import PortalPetDetailPage from '@/pages/portal/PortalPetDetailPage'
 import PortalRequestBookingPage from '@/pages/portal/PortalRequestBookingPage'
 import PortalProfilePage from '@/pages/portal/PortalProfilePage'
+import PortalUpdatesPage from '@/pages/portal/PortalUpdatesPage'
 import PortalJoinPage from '@/pages/portal/PortalJoinPage'
 import LoginPage from '@/pages/LoginPage'
 import DashboardPage from '@/pages/DashboardPage'
@@ -27,6 +28,8 @@ import BookableSpacesPage from '@/pages/settings/BookableSpacesPage'
 import VaccinationTypesPage from '@/pages/settings/VaccinationTypesPage'
 import PricingPage from '@/pages/settings/PricingPage'
 import PortalSettingsPage from '@/pages/settings/PortalSettingsPage'
+import PaymentsSettingsPage from '@/pages/settings/PaymentsSettingsPage'
+import StayJournalSettingsPage from '@/pages/settings/StayJournalSettingsPage'
 import PlanPage from '@/pages/settings/PlanPage'
 import StaffPage from '@/pages/settings/StaffPage'
 import RequireRole from '@/components/auth/RequireRole'
@@ -61,6 +64,7 @@ export default function App() {
                 <Route index             element={<PortalHomePage />} />
                 <Route path="pets"        element={<PortalPetsPage />} />
                 <Route path="pets/:id"    element={<PortalPetDetailPage />} />
+                <Route path="updates"     element={<PortalUpdatesPage />} />
                 <Route path="request"     element={<PortalRequestBookingPage />} />
                 <Route path="profile"     element={<PortalProfilePage />} />
               </Route>
@@ -91,6 +95,8 @@ export default function App() {
                     <Route path="/settings/vaccination-types" element={<VaccinationTypesPage />} />
                     <Route path="/settings/pricing" element={<PricingPage />} />
                     <Route path="/settings/portal"  element={<PortalSettingsPage />} />
+                    <Route path="/settings/payments" element={<PaymentsSettingsPage />} />
+                    <Route path="/settings/journal"  element={<StayJournalSettingsPage />} />
                     <Route path="/settings/plan"    element={<PlanPage />} />
                   </Route>
                   {/* Staff management — owner only */}

@@ -49,7 +49,7 @@ const sections = [
   {
     label: 'Payments',
     description: 'Deposits, balances and Stripe settings',
-    href: null,
+    href: '/settings/payments',
   },
   {
     label: 'Owner portal',
@@ -57,9 +57,9 @@ const sections = [
     href: '/settings/portal',
   },
   {
-    label: 'Notifications',
-    description: 'Email reminders and alerts',
-    href: null,
+    label: 'Stay journal',
+    description: 'Photo & update log kept during each stay',
+    href: '/settings/journal',
   },
 ]
 

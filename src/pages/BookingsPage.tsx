@@ -977,6 +977,9 @@ type BookingListRow = {
   status: DbBookingStatus
   start_date: string
   end_date: string
+  total_amount: number | null
+  deposit_paid: boolean
+  balance_paid: boolean
   owner: {
     id: string
     first_name: string
@@ -997,6 +1000,20 @@ type BookingListRow = {
       species: { name: string; icon: string | null } | null
     } | null
   }[]
+}
+
+function PaymentChip({ booking }: { booking: BookingListRow }) {
+  if (booking.total_amount == null || booking.status === 'cancelled') return null
+  const cfg = booking.balance_paid
+    ? { label: 'Paid',         cls: 'bg-emerald-50 text-emerald-700' }
+    : booking.deposit_paid
+    ? { label: 'Deposit paid', cls: 'bg-amber-50 text-amber-700' }
+    : { label: 'Unpaid',       cls: 'bg-slate-100 text-slate-500' }
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${cfg.cls}`}>
+      {cfg.label}
+    </span>
+  )
 }
 
 function BookingRow({ booking }: { booking: BookingListRow }) {
@@ -1032,6 +1049,7 @@ function BookingRow({ booking }: { booking: BookingListRow }) {
         <div className="text-right flex-shrink-0 hidden sm:block">
           <p className="text-xs font-medium text-slate-700">{formatBookingDate(booking.start_date)}</p>
           <p className="text-xs text-slate-400">{nights} night{nights !== 1 ? 's' : ''}</p>
+          <div className="mt-1"><PaymentChip booking={booking} /></div>
         </div>
         <ChevronRight className="w-4 h-4 text-slate-300 flex-shrink-0" />
       </Link>
@@ -1057,7 +1075,7 @@ export default function BookingsPage() {
     const { data } = await supabase
       .from('bookings')
       .select(`
-        id, status, start_date, end_date,
+        id, status, start_date, end_date, total_amount, deposit_paid, balance_paid,
         owner:owner_id ( id, first_name, last_name, email, address_line1, city, emergency_contact_name, emergency_contact_phone ),
         booking_pets ( pet:pet_id ( id, name, vet_practice_name, vet_phone, microchip_number,
           species:species_id ( name, icon ) ) )

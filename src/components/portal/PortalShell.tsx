@@ -1,5 +1,5 @@
 import { NavLink, Outlet, Navigate } from 'react-router-dom'
-import { PawPrint, Home, CalendarPlus, User, LogOut, Dog } from 'lucide-react'
+import { PawPrint, Home, CalendarPlus, User, LogOut, Dog, BookOpen } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { usePortal } from '@/context/PortalContext'
 import LoadingState from '@/components/ui/LoadingState'
@@ -62,6 +62,9 @@ export default function PortalShell() {
   const nav = [
     { to: '/portal',         label: 'Home',     icon: Home,         end: true },
     { to: '/portal/pets',    label: 'My pets',  icon: Dog,          end: false },
+    ...(settings.stay_journal_owner_visible
+      ? [{ to: '/portal/updates', label: 'Updates', icon: BookOpen, end: false }]
+      : []),
     ...(settings.portal_allow_booking_requests
       ? [{ to: '/portal/request', label: 'Request a stay', icon: CalendarPlus, end: false }]
       : []),

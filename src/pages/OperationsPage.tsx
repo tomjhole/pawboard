@@ -2,11 +2,14 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   LogIn, LogOut, AlertCircle, ShieldAlert, StickyNote, ChevronRight,
-  UtensilsCrossed, Dumbbell, Ban, MapPin,
+  UtensilsCrossed, Dumbbell, Ban, MapPin, Camera,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
+import { usePlan } from '@/lib/plans'
 import { StatusBadge, Button } from '@/components/ui'
+import { AddUpdateModal } from '@/components/StayJournal'
+import { submitJournalEntry } from '@/lib/journalQueue'
 import {
   type DbBookingStatus,
   computeDisplayStatus, hasOutstandingDetails, dbStatusToUi,
@@ -419,6 +422,7 @@ function CareChecklist({
   onToggle,
   dateRelation,
   selectedDate,
+  onAddJournal,
 }: {
   bookings:     OpBooking[]
   careLog:      Set<string>
@@ -426,6 +430,7 @@ function CareChecklist({
   onToggle:     (bookingPetId: string, careType: string) => void
   dateRelation: 'today' | 'past' | 'future'
   selectedDate: string
+  onAddJournal?: (bookingId: string) => void
 }) {
   const rows: { booking: OpBooking; bp: OpBookingPet; pet: OpPet; space: OpSpace | null }[] = []
   for (const b of bookings) {
@@ -556,6 +561,17 @@ function CareChecklist({
                 <Dumbbell className="w-3.5 h-3.5" />
                 {exercised ? 'Done' : 'Exercise'}
               </button>
+
+              {onAddJournal && (
+                <button
+                  onClick={() => onAddJournal(booking.id)}
+                  title="Add a stay-journal update"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border bg-white border-slate-300 text-slate-500 hover:border-violet-400 hover:text-violet-700 transition-colors"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  Update
+                </button>
+              )}
             </div>
           </div>
         )
@@ -669,9 +685,13 @@ function TabBar({ tabs, active, onSelect }: {
 // ─── OperationsPage ───────────────────────────────────────────────────────────
 
 export default function OperationsPage() {
-  const { business } = useBusinessContext()
+  const { business, settings, staffUser } = useBusinessContext()
+  const { can }      = usePlan()
   const navigate     = useNavigate()
   const [searchParams] = useSearchParams()
+  const journalEnabled = can('stayJournal') && settings?.stay_journal_enabled !== false
+  const journalAuthor  = staffUser ? `${staffUser.first_name} ${staffUser.last_name}`.trim() : 'Staff'
+  const [journalFor, setJournalFor] = useState<string | null>(null)
 
   const today        = toIsoDate(new Date())
   const selectedDate = searchParams.get('date') ?? today
@@ -998,6 +1018,7 @@ export default function OperationsPage() {
             onToggle={toggleCare}
             dateRelation={dateRelation}
             selectedDate={selectedDate}
+            onAddJournal={journalEnabled ? setJournalFor : undefined}
           />
         </Section>
       )}
@@ -1055,6 +1076,20 @@ export default function OperationsPage() {
         </div>
       )}
 
+      {journalFor && (
+        <AddUpdateModal
+          onClose={() => setJournalFor(null)}
+          onAdd={async (type, body, file) => {
+            if (business) {
+              await submitJournalEntry({
+                businessId: business.id, bookingId: journalFor, authorLabel: journalAuthor,
+                entryType: type, body, file,
+              })
+            }
+            setJournalFor(null)
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -1,18 +1,24 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
-import { Pencil, Trash2, AlertCircle, CheckCircle, AlertTriangle, LogIn, LogOut, Ban, Undo2, Users } from 'lucide-react'
+import { Pencil, Trash2, AlertCircle, CheckCircle, AlertTriangle, LogIn, LogOut, Ban, Undo2, Users, Printer } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { logAudit } from '@/lib/audit'
 import { AuditLog } from '@/components/AuditLog'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { canDestructiveAction } from '@/lib/roles'
+import { usePlan } from '@/lib/plans'
 import { PageHeader, Card, Button, Modal, Input, Textarea, StatusBadge } from '@/components/ui'
 import {
   type DbBookingStatus, type SpaceWithSpecies,
   computeDisplayStatus, dbStatusToUi, formatBookingDate, SPACES_QUERY,
   petHasCriticalIssues,
 } from '@/pages/BookingsPage'
-import BookingPricing, { BookingPricingSummary } from '@/components/BookingPricing'
+import BookingPricing from '@/components/BookingPricing'
+import BookingPayments from '@/components/BookingPayments'
+import StayJournal from '@/components/StayJournal'
+import { loadOutstanding } from '@/lib/payments'
+import { fmtMoney } from '@/lib/reports'
+import { printBookingReceipt } from '@/lib/receipt'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -722,11 +728,12 @@ function CheckInModal({ open, booking, onClose, onConfirm }: {
   ].length
 
   const handoverItems = [
-    { key: 'feeding',   label: 'Feeding instructions confirmed with owner' },
-    { key: 'meds',      label: 'Medication discussed with owner' },
-    { key: 'behaviour', label: 'Behaviour / temperament noted' },
-    { key: 'consents',  label: 'Consents (placeholder)' },
-    { key: 'payment',   label: 'Payment arranged (placeholder)' },
+    { key: 'feeding',    label: 'Feeding instructions confirmed with owner' },
+    { key: 'meds',       label: 'Medication discussed and handed over' },
+    { key: 'behaviour',  label: 'Behaviour / temperament noted' },
+    { key: 'belongings', label: 'Belongings labelled (bed, food, toys)' },
+    { key: 'consent',    label: 'Owner consent to emergency vet treatment confirmed' },
+    { key: 'deposit',    label: 'Deposit / payment arranged' },
   ]
 
   async function handleConfirm() {
@@ -943,16 +950,27 @@ function CheckInModal({ open, booking, onClose, onConfirm }: {
 
 // ─── CheckOutModal ─────────────────────────────────────────────────────────────
 
-function CheckOutModal({ open, booking, onClose, onConfirm }: {
-  open:      boolean
-  booking:   BookingDetail
-  onClose:   () => void
-  onConfirm: () => Promise<void>
+function CheckOutModal({ open, booking, requireBalance, currency, onClose, onConfirm }: {
+  open:           boolean
+  booking:        BookingDetail
+  requireBalance: boolean
+  currency:       string
+  onClose:        () => void
+  onConfirm:      () => Promise<void>
 }) {
   const [handover, setHandover] = useState<Record<string, boolean>>({})
   const [saving,   setSaving]   = useState(false)
+  const [outstanding, setOutstanding] = useState<number | null>(null)
 
   useEffect(() => { if (open) { setHandover({}); setSaving(false) } }, [open])
+
+  useEffect(() => {
+    if (open && requireBalance) {
+      loadOutstanding(booking.id).then(r => setOutstanding(r.outstanding))
+    } else {
+      setOutstanding(null)
+    }
+  }, [open, requireBalance, booking.id])
 
   const today = new Date().toISOString().split('T')[0]
   const dateWarning = today < booking.end_date
@@ -962,9 +980,10 @@ function CheckOutModal({ open, booking, onClose, onConfirm }: {
     : null
 
   const handoverItems = [
-    { key: 'payment',    label: 'Payment confirmed (placeholder)' },
+    { key: 'condition',  label: 'Pet condition checked — owner happy' },
     { key: 'belongings', label: 'Owner collected all belongings' },
     { key: 'meds',       label: 'Medication / food returned to owner' },
+    { key: 'balance',    label: 'Balance settled / payment confirmed' },
   ]
 
   async function handleConfirm() {
@@ -981,7 +1000,7 @@ function CheckOutModal({ open, booking, onClose, onConfirm }: {
       open={open}
       onClose={onClose}
       title={`Check out — ${ownerName}`}
-      size="sm"
+      size="lg"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
@@ -996,6 +1015,15 @@ function CheckOutModal({ open, booking, onClose, onConfirm }: {
           <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2.5">
             <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
             <p className="text-sm text-amber-800 font-medium">{dateWarning}</p>
+          </div>
+        )}
+
+        {requireBalance && outstanding != null && outstanding > 0 && (
+          <div className="flex items-center gap-2 rounded-lg bg-rose-50 border border-rose-200 px-3.5 py-2.5">
+            <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            <p className="text-sm text-rose-800 font-medium">
+              Outstanding balance of {fmtMoney(outstanding, currency)} — collect before handover.
+            </p>
           </div>
         )}
 
@@ -1015,10 +1043,19 @@ function CheckOutModal({ open, booking, onClose, onConfirm }: {
         </div>
 
         <div>
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Cost summary</p>
-          <div className="rounded-lg bg-slate-50 border border-slate-100 px-3.5 py-3">
-            <BookingPricingSummary bookingId={booking.id} />
-          </div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Charges</p>
+          <p className="text-xs text-slate-400 mb-2">Re-estimate from rates or add a final charge before completing check-out.</p>
+          <BookingPricing
+            bookingId={booking.id}
+            startDate={booking.start_date}
+            endDate={booking.end_date}
+            onTotalChanged={() => loadOutstanding(booking.id).then(r => setOutstanding(r.outstanding))}
+            pets={booking.booking_pets.map(bp => ({
+              id:  bp.id,
+              pet: bp.pet ? { id: bp.pet.id, name: bp.pet.name, size: bp.pet.size, species_id: bp.pet.species?.id ?? null } : null,
+              booking_space_assignments: bp.booking_space_assignments,
+            }))}
+          />
         </div>
 
         <div>
@@ -1054,12 +1091,38 @@ const SOURCE_LABELS: Record<string, string> = {
   manual:   'Manual entry',
 }
 
+type BookingTab = 'overview' | 'charges' | 'journal' | 'activity'
+
+function BookingTabs({ tabs, active, onSelect }: {
+  tabs: { id: BookingTab; label: string }[]
+  active: BookingTab
+  onSelect: (t: BookingTab) => void
+}) {
+  return (
+    <div className="flex border-b border-slate-200 mb-4 mt-5 overflow-x-auto">
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => onSelect(t.id)}
+          className={[
+            'px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors',
+            active === t.id
+              ? 'border-[color:var(--brand-primary)] text-[color:var(--brand-primary)]'
+              : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300',
+          ].join(' ')}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function BookingDetailPage() {
   const { id }   = useParams<{ id: string }>()
   const navigate = useNavigate()
   const location = useLocation()
-  const { staffUser, isAdmin } = useBusinessContext()
+  const { business, settings, staffUser, isAdmin } = useBusinessContext()
+  const { can } = usePlan()
   const canDestruct = isAdmin || canDestructiveAction(staffUser?.role ?? 'read_only')
+  const [tab, setTab] = useState<BookingTab>('overview')
 
   const [booking,        setBooking]        = useState<BookingDetail | null>(null)
   const [spaces,         setSpaces]         = useState<SpaceWithSpecies[]>([])
@@ -1395,6 +1458,15 @@ export default function BookingDetailPage() {
     missingItems.critical.length + missingItems.advisory.length > 0,
   )
 
+  const journalAvailable = can('stayJournal') && settings?.stay_journal_enabled !== false
+  const tabs: { id: BookingTab; label: string }[] = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'charges',  label: 'Charges & payments' },
+    ...(journalAvailable ? [{ id: 'journal' as BookingTab, label: 'Journal' }] : []),
+    { id: 'activity', label: 'Activity' },
+  ]
+  const activeTab: BookingTab = tabs.some(t => t.id === tab) ? tab : 'overview'
+
   return (
     <div className="max-w-2xl">
       <PageHeader
@@ -1456,6 +1528,9 @@ export default function BookingDetailPage() {
         onRecheckIn={handleRecheckIn}
       />
 
+      <BookingTabs tabs={tabs} active={activeTab} onSelect={setTab} />
+
+      {activeTab === 'overview' && (<>
       {/* Booking summary */}
       <Card>
         <dl>
@@ -1631,7 +1706,15 @@ export default function BookingDetailPage() {
           </Card>
         </div>
       )}
+      </>)}
 
+      {activeTab === 'charges' && (<>
+      <div className="flex justify-end">
+        <Button size="sm" variant="secondary" icon={<Printer className="w-3.5 h-3.5" />}
+          onClick={() => printBookingReceipt(booking.id, business?.name ?? 'Receipt', settings?.currency ?? 'GBP')}>
+          Print receipt
+        </Button>
+      </div>
       {/* Pricing */}
       <div className="mt-4">
         <Card>
@@ -1654,7 +1737,13 @@ export default function BookingDetailPage() {
         </Card>
       </div>
 
-      <AuditLog entityId={booking.id} />
+      {/* Payments */}
+      <BookingPayments bookingId={booking.id} />
+      </>)}
+
+      {activeTab === 'journal' && <StayJournal bookingId={booking.id} />}
+
+      {activeTab === 'activity' && <AuditLog entityId={booking.id} />}
 
       <EditBookingModal
         open={editOpen}
@@ -1676,6 +1765,8 @@ export default function BookingDetailPage() {
         <CheckOutModal
           open={checkOutOpen}
           booking={booking}
+          requireBalance={!!settings?.require_balance_before_checkout}
+          currency={settings?.currency ?? 'GBP'}
           onClose={() => setCheckOutOpen(false)}
           onConfirm={handleCheckOutConfirm}
         />
