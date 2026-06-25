@@ -6,7 +6,7 @@ import {
 } from './parts'
 import { fmtMoney, fmtDate, pct } from '@/lib/reports'
 
-const COMMITTED = ['confirmed', 'details_outstanding', 'ready', 'checked_in', 'due_out', 'checked_out']
+const COMMITTED = ['confirmed', 'details_outstanding', 'ready', 'checked_in', 'due_out', 'checked_out'] as const
 
 type RevBooking = {
   id: string

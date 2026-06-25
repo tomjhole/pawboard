@@ -92,7 +92,7 @@ export function VaccinationIssues({ canExport }: ReportProps) {
         <ReportEmpty message="Every active pet has an in-date, verified vaccination. 🎉" />
       ) : (
         <Table>
-          <thead><tr><Th>Pet</Th><Th>Owner</Th><Th>Issue</Th><Th /></tr></thead>
+          <thead><tr><Th>Pet</Th><Th>Owner</Th><Th>Issue</Th><Th>{''}</Th></tr></thead>
           <tbody>
             {rows.map(({ pet, issue }) => (
               <tr key={pet.id}>

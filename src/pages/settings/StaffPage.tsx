@@ -301,7 +301,7 @@ function PendingInviteRow({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function StaffPage() {
-  const { staffUser, business, isAdmin } = useBusinessContext()
+  const { staffUser, isAdmin } = useBusinessContext()
 
   const [staff,          setStaff]          = useState<StaffUser[]>([])
   const [pendingInvites, setPendingInvites]  = useState<PendingInvite[]>([])

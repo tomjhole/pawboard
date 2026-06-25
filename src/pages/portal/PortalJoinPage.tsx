@@ -39,7 +39,7 @@ export default function PortalJoinPage() {
   useEffect(() => {
     if (!token) { setState({ kind: 'invalid' }); return }
     supabase.rpc('get_owner_portal_invite_by_token', { p_token: token }).then(({ data, error }) => {
-      const rows = (data ?? []) as InviteInfo[]
+      const rows = (data ?? []) as unknown as InviteInfo[]
       if (error || rows.length === 0 || !rows[0].is_valid) {
         setState({ kind: 'invalid' })
         return

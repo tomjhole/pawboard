@@ -4,7 +4,7 @@ import {
   ReportFrame, ExportButton, Metric, MetricRow,
   Table, Th, Td, ReportLoading, ReportEmpty, type ReportProps,
 } from './parts'
-import { fmtDate, pct, type DateRange } from '@/lib/reports'
+import { fmtDate, pct } from '@/lib/reports'
 
 type BookingRow = {
   id: string

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { CalendarPlus, Dog, ChevronRight, CalendarDays } from 'lucide-react'
+import { CalendarPlus, ChevronRight, CalendarDays } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { usePortal } from '@/context/PortalContext'
 import { Card } from '@/components/ui'
@@ -51,7 +51,7 @@ export default function PortalHomePage() {
     })
   }, [owner])
 
-  if (!owner) return null
+  if (!owner || !settings) return null
 
   return (
     <div className="space-y-6">

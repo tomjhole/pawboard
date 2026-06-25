@@ -1799,7 +1799,7 @@ export type Database = {
       accept_owner_portal_invite:    { Args: { p_token: string }; Returns: undefined }
       get_owner_portal_invite_by_token: {
         Args: { p_token: string }
-        Returns: { owner_id: string; business_id: string; email: string; is_valid: boolean }[]
+        Returns: { business_name: string; email: string; owner_name: string; expires_at: string; is_valid: boolean }[]
       }
     }
     Enums: {
