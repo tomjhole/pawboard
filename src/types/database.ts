@@ -528,9 +528,18 @@ export type Database = {
           business_id: string
           checkin_time: string
           checkout_time: string
+          bank_transfer_details: string | null
           created_at: string
           currency: string
+          deposit_type: string
+          deposit_value: number
           id: string
+          payments_enabled: boolean
+          require_balance_before_checkout: boolean
+          stripe_enabled: boolean
+          stripe_test_mode: boolean
+          stay_journal_enabled: boolean
+          stay_journal_owner_visible: boolean
           portal_allow_booking_requests: boolean
           portal_allow_documents: boolean
           portal_allow_pet_edits: boolean
@@ -549,9 +558,18 @@ export type Database = {
           business_id: string
           checkin_time?: string
           checkout_time?: string
+          bank_transfer_details?: string | null
           created_at?: string
           currency?: string
+          deposit_type?: string
+          deposit_value?: number
           id?: string
+          payments_enabled?: boolean
+          require_balance_before_checkout?: boolean
+          stripe_enabled?: boolean
+          stripe_test_mode?: boolean
+          stay_journal_enabled?: boolean
+          stay_journal_owner_visible?: boolean
           portal_allow_booking_requests?: boolean
           portal_allow_documents?: boolean
           portal_allow_pet_edits?: boolean
@@ -570,9 +588,18 @@ export type Database = {
           business_id?: string
           checkin_time?: string
           checkout_time?: string
+          bank_transfer_details?: string | null
           created_at?: string
           currency?: string
+          deposit_type?: string
+          deposit_value?: number
           id?: string
+          payments_enabled?: boolean
+          require_balance_before_checkout?: boolean
+          stripe_enabled?: boolean
+          stripe_test_mode?: boolean
+          stay_journal_enabled?: boolean
+          stay_journal_owner_visible?: boolean
           portal_allow_booking_requests?: boolean
           portal_allow_documents?: boolean
           portal_allow_pet_edits?: boolean
@@ -945,6 +972,126 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "species_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      stay_journal_entries: {
+        Row: {
+          id:           string
+          business_id:  string
+          booking_id:   string
+          entry_type:   string
+          body:         string | null
+          photo_url:    string | null
+          author_label: string | null
+          created_by:   string | null
+          created_at:   string
+          updated_at:   string
+        }
+        Insert: {
+          id?:           string
+          business_id:   string
+          booking_id:    string
+          entry_type?:   string
+          body?:         string | null
+          photo_url?:    string | null
+          author_label?: string | null
+          created_by?:   string | null
+          created_at?:   string
+          updated_at?:   string
+        }
+        Update: {
+          id?:           string
+          business_id?:  string
+          booking_id?:   string
+          entry_type?:   string
+          body?:         string | null
+          photo_url?:    string | null
+          author_label?: string | null
+          created_by?:   string | null
+          created_at?:   string
+          updated_at?:   string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "stay_journal_entries_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
+            referencedRelation: "bookings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "stay_journal_entries_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      payments: {
+        Row: {
+          id:          string
+          business_id: string
+          booking_id:  string
+          amount:      number
+          method:      string
+          kind:        string
+          status:      string
+          stripe_checkout_session_id: string | null
+          stripe_payment_intent_id:   string | null
+          notes:       string | null
+          paid_at:     string | null
+          created_by:  string | null
+          created_at:  string
+          updated_at:  string
+        }
+        Insert: {
+          id?:          string
+          business_id:  string
+          booking_id:   string
+          amount:       number
+          method:       string
+          kind?:        string
+          status?:      string
+          stripe_checkout_session_id?: string | null
+          stripe_payment_intent_id?:   string | null
+          notes?:       string | null
+          paid_at?:     string | null
+          created_by?:  string | null
+          created_at?:  string
+          updated_at?:  string
+        }
+        Update: {
+          id?:          string
+          business_id?: string
+          booking_id?:  string
+          amount?:      number
+          method?:      string
+          kind?:        string
+          status?:      string
+          stripe_checkout_session_id?: string | null
+          stripe_payment_intent_id?:   string | null
+          notes?:       string | null
+          paid_at?:     string | null
+          created_by?:  string | null
+          created_at?:  string
+          updated_at?:  string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "payments_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
+            referencedRelation: "bookings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "payments_business_id_fkey"
             columns: ["business_id"]
             isOneToOne: false
             referencedRelation: "businesses"
