@@ -1,6 +1,8 @@
 import { supabase } from '@/lib/supabase'
 import type { Database } from '@/types/database'
 
+type BookingUpdate = Database['public']['Tables']['bookings']['Update']
+
 export type Payment = Database['public']['Tables']['payments']['Row']
 export type PaymentMethod = 'cash' | 'bank_transfer' | 'stripe'
 export type PaymentKind   = 'deposit' | 'balance' | 'full' | 'other' | 'refund'
@@ -35,7 +37,7 @@ export async function syncBookingPaymentFlags(bookingId: string, kind: PaymentKi
   ])
   const paid  = (rows ?? []).reduce((s, r) => s + Number((r as { amount: number }).amount), 0)
   const total = Number(booking?.total_amount ?? 0)
-  const update: Record<string, unknown> = {}
+  const update: BookingUpdate = {}
   if (kind === 'deposit') {
     update.deposit_paid = true
     update.deposit_paid_at = new Date().toISOString()

@@ -12,7 +12,6 @@ import { PageHeader, Card, Button, Modal, Input, Textarea, StatusBadge } from '@
 import {
   type DbBookingStatus, type SpaceWithSpecies,
   computeDisplayStatus, dbStatusToUi, formatBookingDate, SPACES_QUERY,
-  petHasCriticalIssues,
 } from '@/pages/BookingsPage'
 import BookingPricing from '@/components/BookingPricing'
 import BookingPayments from '@/components/BookingPayments'

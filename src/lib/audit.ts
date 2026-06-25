@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import type { Json } from '@/types/database'
 
 export type AuditAction =
   | 'booking.created'
@@ -35,9 +36,9 @@ export async function logAudit(businessId: string, entry: AuditEntry): Promise<v
       action:      entry.action,
       entity_type: entry.entity_type,
       entity_id:   entry.entity_id,
-      before:      entry.before ?? null,
-      after:       entry.after  ?? null,
-      meta:        entry.meta   ?? null,
+      before:      (entry.before ?? null) as Json | null,
+      after:       (entry.after  ?? null) as Json | null,
+      meta:        (entry.meta   ?? null) as Json | null,
     })
   } catch {
     // audit failures must never break the calling action

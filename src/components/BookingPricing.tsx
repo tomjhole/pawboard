@@ -156,9 +156,6 @@ function buildEstimate(
       const unitPrice   = idx === 0 ? basePrice : applySharing(basePrice, idx, sharingRules)
       const totalPrice  = unitPrice * units
 
-      const methodLabel = settings.calculation_method === 'nightly' ? 'night'
-                        : settings.calculation_method === 'daily'   ? 'day'
-                        : 'stay'
       const label = rate.label
         ? `${pet?.name ?? 'Pet'} — ${rate.label}`
         : `${pet?.name ?? 'Pet'} — boarding`

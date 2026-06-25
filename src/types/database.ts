@@ -1327,6 +1327,353 @@ export type Database = {
           },
         ]
       }
+      booking_extras_catalog: {
+        Row: {
+          id:               string
+          business_id:      string
+          name:             string
+          description:      string | null
+          unit_price:       number
+          charge_frequency: string
+          is_active:        boolean
+          sort_order:       number
+          created_at:       string
+        }
+        Insert: {
+          id?:               string
+          business_id:       string
+          name:              string
+          description?:      string | null
+          unit_price:        number
+          charge_frequency?: string
+          is_active?:        boolean
+          sort_order?:       number
+          created_at?:       string
+        }
+        Update: {
+          id?:               string
+          business_id?:      string
+          name?:             string
+          description?:      string | null
+          unit_price?:       number
+          charge_frequency?: string
+          is_active?:        boolean
+          sort_order?:       number
+          created_at?:       string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "booking_extras_catalog_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      booking_line_items: {
+        Row: {
+          id:          string
+          booking_id:  string
+          description: string
+          quantity:    number
+          unit_price:  number
+          total_price: number
+          source:      string
+          sort_order:  number
+          created_at:  string
+        }
+        Insert: {
+          id?:          string
+          booking_id:   string
+          description:  string
+          quantity?:    number
+          unit_price:   number
+          total_price:  number
+          source?:      string
+          sort_order?:  number
+          created_at?:  string
+        }
+        Update: {
+          id?:          string
+          booking_id?:  string
+          description?: string
+          quantity?:    number
+          unit_price?:  number
+          total_price?: number
+          source?:      string
+          sort_order?:  number
+          created_at?:  string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "booking_line_items_booking_id_fkey"
+            columns: ["booking_id"]
+            isOneToOne: false
+            referencedRelation: "bookings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      daily_care_log: {
+        Row: {
+          id:             string
+          business_id:    string
+          booking_pet_id: string
+          log_date:       string
+          care_type:      string
+          completed_at:   string
+          completed_by:   string | null
+        }
+        Insert: {
+          id?:             string
+          business_id:     string
+          booking_pet_id:  string
+          log_date:        string
+          care_type:       string
+          completed_at?:   string
+          completed_by?:   string | null
+        }
+        Update: {
+          id?:             string
+          business_id?:    string
+          booking_pet_id?: string
+          log_date?:       string
+          care_type?:      string
+          completed_at?:   string
+          completed_by?:   string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "daily_care_log_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "daily_care_log_booking_pet_id_fkey"
+            columns: ["booking_pet_id"]
+            isOneToOne: false
+            referencedRelation: "booking_pets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      daily_notes: {
+        Row: {
+          id:          string
+          business_id: string
+          log_date:    string
+          note_text:   string
+          updated_at:  string
+        }
+        Insert: {
+          id?:          string
+          business_id:  string
+          log_date:     string
+          note_text?:   string
+          updated_at?:  string
+        }
+        Update: {
+          id?:          string
+          business_id?: string
+          log_date?:    string
+          note_text?:   string
+          updated_at?:  string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "daily_notes_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      plan_pricing: {
+        Row: {
+          plan_id:       string
+          price_monthly: number
+          currency:      string
+          is_active:     boolean
+          updated_at:    string
+        }
+        Insert: {
+          plan_id:        string
+          price_monthly:  number
+          currency?:      string
+          is_active?:     boolean
+          updated_at?:    string
+        }
+        Update: {
+          plan_id?:       string
+          price_monthly?: number
+          currency?:      string
+          is_active?:     boolean
+          updated_at?:    string
+        }
+        Relationships: []
+      }
+      pricing_rates: {
+        Row: {
+          id:          string
+          business_id: string
+          area_id:     string | null
+          species_id:  string | null
+          pet_size:    string | null
+          unit_price:  number
+          label:       string | null
+          sort_order:  number
+          is_active:   boolean
+          created_at:  string
+        }
+        Insert: {
+          id?:          string
+          business_id:  string
+          area_id?:     string | null
+          species_id?:  string | null
+          pet_size?:    string | null
+          unit_price:   number
+          label?:       string | null
+          sort_order?:  number
+          is_active?:   boolean
+          created_at?:  string
+        }
+        Update: {
+          id?:          string
+          business_id?: string
+          area_id?:     string | null
+          species_id?:  string | null
+          pet_size?:    string | null
+          unit_price?:  number
+          label?:       string | null
+          sort_order?:  number
+          is_active?:   boolean
+          created_at?:  string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pricing_rates_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pricing_settings: {
+        Row: {
+          id:                 string
+          business_id:        string
+          calculation_method: string
+          currency_code:      string
+          created_at:         string
+        }
+        Insert: {
+          id?:                 string
+          business_id:         string
+          calculation_method?: string
+          currency_code?:      string
+          created_at?:         string
+        }
+        Update: {
+          id?:                  string
+          business_id?:         string
+          calculation_method?:  string
+          currency_code?:       string
+          created_at?:          string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pricing_settings_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: true
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pricing_sharing_rules: {
+        Row: {
+          id:             string
+          business_id:    string
+          animal_number:  number
+          is_nth_onwards: boolean
+          discount_type:  string
+          value:          number
+          sort_order:     number
+          created_at:     string
+        }
+        Insert: {
+          id?:             string
+          business_id:     string
+          animal_number:   number
+          is_nth_onwards?: boolean
+          discount_type:   string
+          value:           number
+          sort_order?:     number
+          created_at?:     string
+        }
+        Update: {
+          id?:             string
+          business_id?:    string
+          animal_number?:  number
+          is_nth_onwards?: boolean
+          discount_type?:  string
+          value?:          number
+          sort_order?:     number
+          created_at?:     string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pricing_sharing_rules_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      vaccination_types: {
+        Row: {
+          id:          string
+          business_id: string
+          name:        string
+          species_id:  string | null
+          is_critical: boolean
+          sort_order:  number
+          is_active:   boolean
+        }
+        Insert: {
+          id?:          string
+          business_id:  string
+          name:         string
+          species_id?:  string | null
+          is_critical?: boolean
+          sort_order?:  number
+          is_active?:   boolean
+        }
+        Update: {
+          id?:          string
+          business_id?: string
+          name?:        string
+          species_id?:  string | null
+          is_critical?: boolean
+          sort_order?:  number
+          is_active?:   boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "vaccination_types_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       vaccinations: {
         Row: {
           administered_date: string | null
@@ -1401,7 +1748,59 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      get_current_business_id: { Args: never; Returns: string }
+      get_current_business_id:       { Args: Record<PropertyKey, never>; Returns: string }
+      is_platform_admin:             { Args: Record<PropertyKey, never>; Returns: boolean }
+      get_admin_view_business_id:    { Args: Record<PropertyKey, never>; Returns: string | null }
+      get_portal_owner_id:           { Args: Record<PropertyKey, never>; Returns: string | null }
+      set_admin_view: {
+        Args: { target_business_id: string | null }
+        Returns: undefined
+      }
+      get_all_businesses_admin: {
+        Args: Record<PropertyKey, never>
+        Returns: Database["public"]["Tables"]["businesses"]["Row"][]
+      }
+      create_business_and_owner: {
+        Args: { p_name: string; p_slug: string; p_first_name: string; p_last_name: string; p_email: string; p_phone?: string | null }
+        Returns: string
+      }
+      list_platform_admins: {
+        Args: Record<PropertyKey, never>
+        Returns: { user_id: string; email: string; created_at: string }[]
+      }
+      grant_platform_admin_by_email: { Args: { p_email: string }; Returns: undefined }
+      revoke_platform_admin:         { Args: { p_user_id: string }; Returns: undefined }
+      create_business_admin:         { Args: { p_name: string; p_slug: string }; Returns: string }
+      delete_business_admin:         { Args: { p_business_id: string }; Returns: undefined }
+      set_business_plan_admin:       { Args: { p_business_id: string; p_plan: string }; Returns: undefined }
+      update_plan_pricing: {
+        Args: { p_plan_id: string; p_price: number; p_currency?: string }
+        Returns: undefined
+      }
+      create_staff_invite: {
+        Args: { p_email: string; p_role: Database["public"]["Enums"]["staff_role"] }
+        Returns: string
+      }
+      get_invite_by_token: {
+        Args: { p_token: string }
+        Returns: { business_name: string; email: string; role: Database["public"]["Enums"]["staff_role"]; expires_at: string; is_valid: boolean }[]
+      }
+      accept_staff_invite: {
+        Args: { p_token: string; p_first_name: string; p_last_name: string }
+        Returns: undefined
+      }
+      update_staff_role: {
+        Args: { p_staff_id: string; p_new_role: Database["public"]["Enums"]["staff_role"] }
+        Returns: undefined
+      }
+      set_staff_active:              { Args: { p_staff_id: string; p_active: boolean }; Returns: undefined }
+      portal_can:                    { Args: { p_feature: string }; Returns: boolean }
+      create_owner_portal_invite:    { Args: { p_owner_id: string }; Returns: string }
+      accept_owner_portal_invite:    { Args: { p_token: string }; Returns: undefined }
+      get_owner_portal_invite_by_token: {
+        Args: { p_token: string }
+        Returns: { owner_id: string; business_id: string; email: string; is_valid: boolean }[]
+      }
     }
     Enums: {
       booking_status:

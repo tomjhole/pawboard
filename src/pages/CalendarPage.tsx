@@ -8,7 +8,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { Button, PageHeader, PlanGate } from '@/components/ui'
+import { Button, PageHeader } from '@/components/ui'
 import { usePlan } from '@/lib/plans'
 import { NewBookingModal, STATUS_LABELS, computeDisplayStatus } from '@/pages/BookingsPage'
 import type { DbBookingStatus } from '@/pages/BookingsPage'
@@ -371,6 +371,7 @@ interface OccupancyViewProps {
 }
 
 function OccupancyView({ speciesOccupancy, days, todayStr }: OccupancyViewProps) {
+  const navigate  = useNavigate()
   const gridCols = `${OCT_LABEL_W}px repeat(${days.length}, 1fr)`
   const minWidth  = OCT_LABEL_W + days.length * OCT_DAY_MIN
 

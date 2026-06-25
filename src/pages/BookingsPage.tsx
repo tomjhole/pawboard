@@ -4,7 +4,7 @@ import { Plus, ChevronRight, CalendarDays, X, AlertTriangle } from 'lucide-react
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import {
-  PageHeader, Card, Button, Modal, Input, Select, Textarea, EmptyState,
+  PageHeader, Card, Button, Modal, Input, Textarea, EmptyState,
   StatusBadge, type BookingStatus,
 } from '@/components/ui'
 import type { Database } from '@/types/database'
