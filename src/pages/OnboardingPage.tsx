@@ -54,7 +54,7 @@ export default function OnboardingPage() {
     }
 
     reload()
-    navigate('/', { replace: true })
+    navigate('/setup', { replace: true })
   }
 
   return (

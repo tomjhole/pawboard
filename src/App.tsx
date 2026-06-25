@@ -34,6 +34,7 @@ import PlanPage from '@/pages/settings/PlanPage'
 import StaffPage from '@/pages/settings/StaffPage'
 import RequireRole from '@/components/auth/RequireRole'
 import OnboardingPage from '@/pages/OnboardingPage'
+import SetupWizard from '@/pages/SetupWizard'
 import JoinPage from '@/pages/JoinPage'
 import AdminPage from '@/pages/AdminPage'
 import OwnerDetailPage from '@/pages/OwnerDetailPage'
@@ -71,6 +72,8 @@ export default function App() {
             </Route>
             <Route element={<RequireAuth />}>
               <Route element={<RequireBusiness />}>
+                {/* Full-screen first-run setup wizard (no app chrome) */}
+                <Route path="/setup" element={<SetupWizard />} />
                 <Route element={<AppShell />}>
                   <Route path="/" element={<Navigate to="/calendar" replace />} />
                   <Route path="/dashboard" element={<DashboardPage />} />

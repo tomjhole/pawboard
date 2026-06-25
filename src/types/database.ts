@@ -540,6 +540,7 @@ export type Database = {
           stripe_test_mode: boolean
           stay_journal_enabled: boolean
           stay_journal_owner_visible: boolean
+          setup_completed_at: string | null
           portal_allow_booking_requests: boolean
           portal_allow_documents: boolean
           portal_allow_pet_edits: boolean
@@ -570,6 +571,7 @@ export type Database = {
           stripe_test_mode?: boolean
           stay_journal_enabled?: boolean
           stay_journal_owner_visible?: boolean
+          setup_completed_at?: string | null
           portal_allow_booking_requests?: boolean
           portal_allow_documents?: boolean
           portal_allow_pet_edits?: boolean
@@ -600,6 +602,7 @@ export type Database = {
           stripe_test_mode?: boolean
           stay_journal_enabled?: boolean
           stay_journal_owner_visible?: boolean
+          setup_completed_at?: string | null
           portal_allow_booking_requests?: boolean
           portal_allow_documents?: boolean
           portal_allow_pet_edits?: boolean
