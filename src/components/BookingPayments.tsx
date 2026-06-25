@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import {
-  Banknote, Landmark, CreditCard, Trash2, CheckCircle, XCircle, Plus,
+  Banknote, Landmark, CreditCard, Trash2, CheckCircle, XCircle, Plus, Mail,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { usePlan } from '@/lib/plans'
 import { Button, Input, Textarea, Modal } from '@/components/ui'
 import { fmtMoney } from '@/lib/reports'
+import { notify } from '@/lib/notify'
 import {
   paidTotal, depositAmount, syncBookingPaymentFlags, startCardCheckout,
   type Payment, type PaymentMethod, type PaymentKind,
@@ -43,6 +44,8 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
   const [banner,   setBanner]   = useState<'success' | 'cancelled' | null>(null)
   const [cardError, setCardError] = useState<string | null>(null)
   const [cardBusy,  setCardBusy]  = useState(false)
+  const [emailBusy, setEmailBusy] = useState<'invoice' | 'receipt' | null>(null)
+  const [emailMsg,  setEmailMsg]  = useState<string | null>(null)
 
   const [params, setParams] = useSearchParams()
 
@@ -91,6 +94,18 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
   async function deletePayment(id: string) {
     await supabase.from('payments').delete().eq('id', id)
     await load()
+  }
+
+  async function emailDoc(kind: 'invoice' | 'receipt') {
+    if (!business) return
+    setEmailBusy(kind); setEmailMsg(null)
+    const r = await notify(kind === 'invoice' ? 'invoice' : 'payment_receipt', {
+      businessId: business.id, relatedId: bookingId, extra: { force: true },
+    })
+    setEmailBusy(null)
+    setEmailMsg(r.sent
+      ? (kind === 'invoice' ? 'Invoice emailed ✓' : 'Receipt emailed ✓')
+      : (r.reason ?? 'Could not send the email.'))
   }
 
   return (
@@ -187,6 +202,25 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
             ))}
           </div>
 
+          {/* Email invoice / receipt (owner needs an email on file) */}
+          {(total != null && (paid > 0 || (outstanding ?? 0) > 0)) && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              {outstanding != null && outstanding > 0 && (
+                <Button size="sm" variant="ghost" icon={<Mail className="w-3.5 h-3.5" />}
+                  loading={emailBusy === 'invoice'} onClick={() => emailDoc('invoice')}>
+                  Email invoice
+                </Button>
+              )}
+              {paid > 0 && (
+                <Button size="sm" variant="ghost" icon={<Mail className="w-3.5 h-3.5" />}
+                  loading={emailBusy === 'receipt'} onClick={() => emailDoc('receipt')}>
+                  Email receipt
+                </Button>
+              )}
+              {emailMsg && <span className="text-xs text-slate-500">{emailMsg}</span>}
+            </div>
+          )}
+
           {stripeOn && !canCard && (
             <p className="text-xs text-slate-400">Online card payments are available on the Premium plan.</p>
           )}
@@ -250,7 +284,7 @@ function RecordPaymentModal({ method, bookingId, businessId, currency, defaultAm
     if (isNaN(amt) || amt <= 0) { setError('Enter an amount greater than zero.'); return }
     setSaving(true); setError(null)
     const { data: { user } } = await supabase.auth.getUser()
-    const { error } = await supabase.from('payments').insert({
+    const { data: inserted, error } = await supabase.from('payments').insert({
       booking_id:  bookingId,
       business_id: businessId,
       amount:      amt,
@@ -260,9 +294,11 @@ function RecordPaymentModal({ method, bookingId, businessId, currency, defaultAm
       paid_at:     new Date().toISOString(),
       notes:       notes.trim() || null,
       created_by:  user?.id ?? null,
-    })
+    }).select('id').single()
     if (error) { setError(error.message); setSaving(false); return }
     await syncBookingPaymentFlags(bookingId, kind)
+    // Auto-send a receipt (honours the business's notify_payment_receipt toggle)
+    notify('payment_receipt', { businessId, relatedId: bookingId, extra: { payment_id: inserted?.id } })
     setSaving(false)
     onSaved()
   }

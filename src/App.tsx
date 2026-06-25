@@ -30,6 +30,7 @@ import PricingPage from '@/pages/settings/PricingPage'
 import PortalSettingsPage from '@/pages/settings/PortalSettingsPage'
 import PaymentsSettingsPage from '@/pages/settings/PaymentsSettingsPage'
 import StayJournalSettingsPage from '@/pages/settings/StayJournalSettingsPage'
+import NotificationsSettingsPage from '@/pages/settings/NotificationsSettingsPage'
 import PlanPage from '@/pages/settings/PlanPage'
 import StaffPage from '@/pages/settings/StaffPage'
 import RequireRole from '@/components/auth/RequireRole'
@@ -100,6 +101,7 @@ export default function App() {
                     <Route path="/settings/portal"  element={<PortalSettingsPage />} />
                     <Route path="/settings/payments" element={<PaymentsSettingsPage />} />
                     <Route path="/settings/journal"  element={<StayJournalSettingsPage />} />
+                    <Route path="/settings/notifications" element={<NotificationsSettingsPage />} />
                     <Route path="/settings/plan"    element={<PlanPage />} />
                   </Route>
                   {/* Staff management — owner only */}

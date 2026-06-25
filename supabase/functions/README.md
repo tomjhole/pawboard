@@ -53,3 +53,64 @@ are only needed for **card payments via Stripe Checkout**.
   `deposit_paid` / `balance_paid` flags.
 
 No Stripe Connect is used — payments go to your own Stripe account.
+
+---
+
+# Email notifications (Resend)
+
+Powers booking confirmations, change/cancel notices, payment receipts, invoices,
+owner-portal invites, booking-request acknowledgements, and the daily arrival +
+vaccination reminders. Functions: `send-email` (app-triggered) and
+`send-reminders` (scheduled). The Stripe webhook also emails card receipts.
+
+## One-time setup
+
+1. **Verify a sending domain in Resend** (Resend → Domains → Add). Add the
+   **SPF, DKIM and DMARC** DNS records it gives you. This is what makes mail
+   look legitimate (not spam / not "via resend.dev").
+
+2. **Set the secrets:**
+   ```bash
+   supabase secrets set RESEND_API_KEY=re_xxx
+   supabase secrets set EMAIL_FROM_ADDRESS=notifications@yourdomain.com   # on the verified domain
+   supabase secrets set APP_URL=https://app.yourdomain.com                 # fallback for links
+   ```
+
+3. **Deploy:**
+   ```bash
+   supabase functions deploy send-email
+   supabase functions deploy send-reminders --no-verify-jwt
+   ```
+
+4. **Schedule the daily reminders** (Supabase Cron — enable `pg_cron` + `pg_net`):
+   ```sql
+   select cron.schedule('pawboard-reminders', '0 8 * * *', $$
+     select net.http_post(
+       url := 'https://<project-ref>.functions.supabase.co/send-reminders',
+       headers := jsonb_build_object('Authorization', 'Bearer <SERVICE_ROLE_KEY>'));
+   $$);
+   ```
+
+Mail sends from **`{Business name} <notifications@yourdomain.com>`** with
+**Reply-To = the business's own email**, so owners see the kennel as the sender.
+Reminders are **Premium**-only and honour each business's toggles in
+**Settings → Notifications**.
+
+## Fix the Supabase Auth emails (signup confirmation, reset, magic link)
+
+These are sent by Supabase Auth, *not* the functions above — by default they
+look like a generic Supabase email. To brand them:
+
+1. **Authentication → SMTP**: enable custom SMTP using Resend's SMTP credentials,
+   sender `PawBoard <noreply@yourdomain.com>` (same verified domain).
+2. **Authentication → Email Templates**: paste the branded HTML from
+   `supabase/email-templates/` (confirm signup, magic link, reset, invite).
+
+## How it fits together
+
+- `send-email` — verifies the caller can see the entity (RLS), checks the
+  business's `email_enabled` + per-type toggle, renders a branded template
+  (`_shared/email.ts`), sends via Resend, logs to `email_log`.
+- `send-reminders` — daily; for Premium businesses, sends arrival + vaccination
+  reminders, de-duping against `email_log` so it never repeats.
+- Test card receipt: complete a Stripe test payment → the webhook emails a receipt.

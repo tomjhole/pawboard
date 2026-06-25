@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import { Pencil, Trash2, AlertCircle, CheckCircle, AlertTriangle, LogIn, LogOut, Ban, Undo2, Users, Printer } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { logAudit } from '@/lib/audit'
+import { notify } from '@/lib/notify'
 import { AuditLog } from '@/components/AuditLog'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { canDestructiveAction } from '@/lib/roles'
@@ -1271,6 +1272,7 @@ export default function BookingDetailPage() {
       before: { start_date: booking.start_date, end_date: booking.end_date, notes: booking.notes },
       after:  { start_date: form.startDate,      end_date: form.endDate,      notes: form.notes.trim() || null },
     })
+    if (datesChanged) notify('booking_changed', { businessId: booking.business_id, relatedId: booking.id })
     await load()
   }
 
@@ -1364,6 +1366,7 @@ export default function BookingDetailPage() {
       before: { status: prevStatus },
       after:  { status: 'confirmed' },
     })
+    notify('booking_confirmation', { businessId: booking.business_id, relatedId: booking.id })
     await load()
   }
 
@@ -1405,6 +1408,7 @@ export default function BookingDetailPage() {
       before: { status: prevStatus },
       after:  { status: 'cancelled' },
     })
+    notify('booking_cancelled', { businessId: booking.business_id, relatedId: booking.id })
     await load()
   }
 

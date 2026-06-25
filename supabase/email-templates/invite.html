@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <body style="margin:0;background:#f1f5f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+    <div style="max-width:520px;margin:0 auto;padding:24px">
+      <div style="font-size:18px;font-weight:700;color:#0f172a;margin-bottom:16px">🐾 PawBoard</div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:28px">
+        <h1 style="margin:0 0 10px;font-size:18px;color:#0f172a">You've been invited to PawBoard</h1>
+        <p style="margin:0 0 16px;font-size:14px;line-height:1.55;color:#475569">
+          You've been invited to join a team on PawBoard. Tap below to accept the invitation and set up your account.
+        </p>
+        <a href="{{ .ConfirmationURL }}"
+           style="display:inline-block;background:#059669;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:11px 20px;border-radius:10px">
+          Accept invitation
+        </a>
+        <p style="margin:18px 0 0;font-size:12px;color:#94a3b8;line-height:1.5">
+          If the button doesn't work, copy and paste this link:<br>
+          <span style="color:#64748b;word-break:break-all">{{ .ConfirmationURL }}</span>
+        </p>
+      </div>
+      <p style="text-align:center;color:#94a3b8;font-size:12px;margin:16px 0 0">PawBoard — the visual booking diary for kennels &amp; catteries</p>
+    </div>
+  </body>
+</html>

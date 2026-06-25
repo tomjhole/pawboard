@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   CalendarDays,
@@ -9,10 +10,12 @@ import {
   Settings,
   BarChart3,
   X,
+  MessageSquarePlus,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { canAccessSettings } from '@/lib/roles'
+import FeedbackModal from '@/components/FeedbackModal'
 
 interface SidebarProps {
   onClose: () => void
@@ -49,6 +52,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
   const { user } = useAuth()
   const { staffUser, business, isAdmin } = useBusinessContext()
   const showSettings = isAdmin || (staffUser ? canAccessSettings(staffUser.role) : false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
 
   const displayName = staffUser
     ? `${staffUser.first_name} ${staffUser.last_name}`.trim()
@@ -83,6 +87,8 @@ export default function Sidebar({ onClose }: SidebarProps) {
         ))}
       </nav>
 
+      <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+
       <div className="px-3 pb-3 border-t border-slate-200 pt-3 space-y-0.5">
         {showSettings && (
           <NavLink to="/settings" className={navClass} style={navStyle} onClick={onClose}>
@@ -90,6 +96,15 @@ export default function Sidebar({ onClose }: SidebarProps) {
             Settings
           </NavLink>
         )}
+
+        <button
+          type="button"
+          onClick={() => setFeedbackOpen(true)}
+          className={`${navBase} w-full text-slate-600 hover:bg-slate-50 hover:text-slate-900`}
+        >
+          <MessageSquarePlus className="w-5 h-5 flex-shrink-0" />
+          Feedback
+        </button>
 
         <div className="flex items-center gap-3 px-3 py-2.5 mt-1">
           <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0"

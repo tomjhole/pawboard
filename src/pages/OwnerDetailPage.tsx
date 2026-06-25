@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Pencil, Trash2, CheckCircle, AlertCircle, ChevronRight, Plus, Globe, Copy, Check } from 'lucide-react'
+import { Pencil, Trash2, CheckCircle, AlertCircle, ChevronRight, Plus, Globe, Copy, Check, Mail } from 'lucide-react'
+import { notify } from '@/lib/notify'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { PageHeader, Card, Button } from '@/components/ui'
@@ -21,16 +22,20 @@ type OwnerPet = {
   species:  Pick<Species, 'id' | 'name' | 'icon' | 'colour'> | null
 }
 
-function PortalAccessCard({ owner, canManage, portalEnabled, businessName }: {
+function PortalAccessCard({ owner, canManage, portalEnabled, businessName, businessId }: {
   owner: Owner
   canManage: boolean
   portalEnabled: boolean
   businessName: string
+  businessId: string
 }) {
   const [link, setLink]   = useState<string | null>(null)
+  const [token, setToken] = useState<string | null>(null)
   const [busy, setBusy]   = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<'link' | 'message' | null>(null)
+  const [emailBusy, setEmailBusy] = useState(false)
+  const [emailMsg,  setEmailMsg]  = useState<string | null>(null)
 
   const isLinked = !!owner.portal_user_id
 
@@ -46,7 +51,23 @@ function PortalAccessCard({ owner, canManage, portalEnabled, businessName }: {
     const { data, error } = await supabase.rpc('create_owner_portal_invite', { p_owner_id: owner.id })
     setBusy(false)
     if (error) { setError(error.message); return }
+    setToken(data as string)
     setLink(`${window.location.origin}/portal/join?token=${data}`)
+  }
+
+  async function emailInvite() {
+    setEmailBusy(true); setEmailMsg(null); setError(null)
+    let t = token
+    if (!t) {
+      const { data, error } = await supabase.rpc('create_owner_portal_invite', { p_owner_id: owner.id })
+      if (error) { setError(error.message); setEmailBusy(false); return }
+      t = data as string
+      setToken(t)
+      setLink(`${window.location.origin}/portal/join?token=${t}`)
+    }
+    const r = await notify('portal_invite', { businessId, relatedId: owner.id, extra: { token: t, force: true } })
+    setEmailBusy(false)
+    setEmailMsg(r.sent ? `Invite emailed to ${owner.email}` : (r.reason ?? 'Could not send the email.'))
   }
 
   async function copy(what: 'link' | 'message') {
@@ -85,11 +106,20 @@ function PortalAccessCard({ owner, canManage, portalEnabled, businessName }: {
             )}
 
             {canManage && !link && (
-              <div className="mt-3">
-                <Button size="sm" icon={<Globe className="w-3.5 h-3.5" />} onClick={invite}
-                  loading={busy} disabled={!owner.email}>
-                  {owner.email ? 'Create invite link' : 'Add an email address first'}
-                </Button>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {owner.email ? (
+                  <>
+                    <Button size="sm" icon={<Mail className="w-3.5 h-3.5" />} onClick={emailInvite} loading={emailBusy}>
+                      Email invite to {owner.first_name}
+                    </Button>
+                    <Button size="sm" variant="secondary" icon={<Globe className="w-3.5 h-3.5" />} onClick={invite} loading={busy}>
+                      Get a link instead
+                    </Button>
+                    {emailMsg && <span className="text-xs text-slate-500">{emailMsg}</span>}
+                  </>
+                ) : (
+                  <Button size="sm" disabled icon={<Globe className="w-3.5 h-3.5" />}>Add an email address first</Button>
+                )}
               </div>
             )}
 
@@ -117,6 +147,14 @@ function PortalAccessCard({ owner, canManage, portalEnabled, businessName }: {
                     {copied === 'message' ? 'Copied' : 'Copy message'}
                   </Button>
                 </div>
+                {owner.email && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Button size="sm" icon={<Mail className="w-3.5 h-3.5" />} onClick={emailInvite} loading={emailBusy}>
+                      Email it to {owner.first_name}
+                    </Button>
+                    {emailMsg && <span className="text-xs text-slate-500">{emailMsg}</span>}
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -376,6 +414,7 @@ export default function OwnerDetailPage() {
         canManage={canDestruct}
         portalEnabled={!!settings?.portal_enabled}
         businessName={business?.name ?? 'us'}
+        businessId={business?.id ?? ''}
       />
 
       {/* Pets section */}

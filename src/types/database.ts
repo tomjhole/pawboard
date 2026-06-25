@@ -541,6 +541,14 @@ export type Database = {
           stay_journal_enabled: boolean
           stay_journal_owner_visible: boolean
           setup_completed_at: string | null
+          email_enabled: boolean
+          notify_booking_changes: boolean
+          notify_cancellation: boolean
+          notify_payment_receipt: boolean
+          notify_booking_request: boolean
+          notify_arrival_reminder: boolean
+          notify_vaccination_reminder: boolean
+          vaccination_reminder_days: number
           portal_allow_booking_requests: boolean
           portal_allow_documents: boolean
           portal_allow_pet_edits: boolean
@@ -572,6 +580,14 @@ export type Database = {
           stay_journal_enabled?: boolean
           stay_journal_owner_visible?: boolean
           setup_completed_at?: string | null
+          email_enabled?: boolean
+          notify_booking_changes?: boolean
+          notify_cancellation?: boolean
+          notify_payment_receipt?: boolean
+          notify_booking_request?: boolean
+          notify_arrival_reminder?: boolean
+          notify_vaccination_reminder?: boolean
+          vaccination_reminder_days?: number
           portal_allow_booking_requests?: boolean
           portal_allow_documents?: boolean
           portal_allow_pet_edits?: boolean
@@ -603,6 +619,14 @@ export type Database = {
           stay_journal_enabled?: boolean
           stay_journal_owner_visible?: boolean
           setup_completed_at?: string | null
+          email_enabled?: boolean
+          notify_booking_changes?: boolean
+          notify_cancellation?: boolean
+          notify_payment_receipt?: boolean
+          notify_booking_request?: boolean
+          notify_arrival_reminder?: boolean
+          notify_vaccination_reminder?: boolean
+          vaccination_reminder_days?: number
           portal_allow_booking_requests?: boolean
           portal_allow_documents?: boolean
           portal_allow_pet_edits?: boolean
@@ -1029,6 +1053,59 @@ export type Database = {
           },
           {
             foreignKeyName: "stay_journal_entries_business_id_fkey"
+            columns: ["business_id"]
+            isOneToOne: false
+            referencedRelation: "businesses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      email_log: {
+        Row: {
+          id:           string
+          business_id:  string
+          to_email:     string
+          type:         string
+          subject:      string | null
+          related_type: string | null
+          related_id:   string | null
+          status:       string
+          provider_id:  string | null
+          error:        string | null
+          created_at:   string
+          sent_at:      string | null
+        }
+        Insert: {
+          id?:           string
+          business_id:   string
+          to_email:      string
+          type:          string
+          subject?:      string | null
+          related_type?: string | null
+          related_id?:   string | null
+          status?:       string
+          provider_id?:  string | null
+          error?:        string | null
+          created_at?:   string
+          sent_at?:      string | null
+        }
+        Update: {
+          id?:           string
+          business_id?:  string
+          to_email?:     string
+          type?:         string
+          subject?:      string | null
+          related_type?: string | null
+          related_id?:   string | null
+          status?:       string
+          provider_id?:  string | null
+          error?:        string | null
+          created_at?:   string
+          sent_at?:      string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "email_log_business_id_fkey"
             columns: ["business_id"]
             isOneToOne: false
             referencedRelation: "businesses"

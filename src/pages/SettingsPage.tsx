@@ -61,6 +61,11 @@ const sections = [
     description: 'Photo & update log kept during each stay',
     href: '/settings/journal',
   },
+  {
+    label: 'Notifications',
+    description: 'Choose which automatic emails go to customers',
+    href: '/settings/notifications',
+  },
 ]
 
 export default function SettingsPage() {

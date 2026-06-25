@@ -4,6 +4,7 @@ import { CheckCircle, ChevronLeft } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { usePortal } from '@/context/PortalContext'
 import { Card, Button, Input, Textarea } from '@/components/ui'
+import { notify } from '@/lib/notify'
 import { todayIso, nights } from './shared'
 
 type SelPet = { id: string; name: string; species: { icon: string | null } | null }
@@ -71,6 +72,7 @@ export default function PortalRequestBookingPage() {
       const { error: bpErr } = await supabase.from('booking_pets').insert(rows)
       if (bpErr) throw new Error(bpErr.message)
 
+      notify('booking_request_received', { businessId: owner.business_id, relatedId: booking.id })
       setDone(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')

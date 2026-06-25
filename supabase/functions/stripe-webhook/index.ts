@@ -15,7 +15,42 @@
 //            the whsec_ value above)
 // =============================================================================
 import Stripe from 'https://esm.sh/stripe@16.2.0?target=deno'
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import * as E from '../_shared/email.ts'
+
+// Emails a card-payment receipt to the owner, honouring the business's toggles.
+async function sendCardReceipt(admin: SupabaseClient, bookingId: string, paid: number, total: number) {
+  const { data: booking } = await admin.from('bookings')
+    .select('business_id, owner:owner_id ( first_name, email )')
+    .eq('id', bookingId).maybeSingle()
+  const owner = booking?.owner as { first_name: string; email: string | null } | null
+  if (!booking || !owner?.email) return
+
+  const [{ data: business }, { data: theme }, { data: settings }] = await Promise.all([
+    admin.from('businesses').select('name, email').eq('id', booking.business_id).maybeSingle(),
+    admin.from('business_theme').select('primary_colour, logo_url').eq('business_id', booking.business_id).maybeSingle(),
+    admin.from('business_settings').select('email_enabled, notify_payment_receipt, currency').eq('business_id', booking.business_id).maybeSingle(),
+  ])
+  if (!business) return
+  if (settings && (settings.email_enabled === false || settings.notify_payment_receipt === false)) return
+
+  const apiKey = Deno.env.get('RESEND_API_KEY')
+  if (!apiKey) return
+  const currency = settings?.currency ?? 'GBP'
+  const brand: E.Brand = { name: business.name, colour: theme?.primary_colour ?? '#059669', logoUrl: theme?.logo_url ?? null }
+  const { data: last } = await admin.from('payments').select('amount').eq('booking_id', bookingId).eq('status', 'paid').order('created_at', { ascending: false }).limit(1).maybeSingle()
+  const built = E.tplPaymentReceipt(brand, {
+    ownerName: owner.first_name, currency, amount: Number(last?.amount ?? paid), method: 'card',
+    total, paid, outstanding: Math.max(0, total - paid),
+  })
+  const from = `${business.name} <${Deno.env.get('EMAIL_FROM_ADDRESS') ?? 'notifications@pawboard.app'}>`
+  const r = await E.sendViaResend({ apiKey, from, replyTo: business.email ?? null, to: owner.email, subject: built.subject, html: built.html })
+  await admin.from('email_log').insert({
+    business_id: booking.business_id, to_email: owner.email, type: 'payment_receipt', subject: built.subject,
+    related_type: 'booking', related_id: bookingId, status: r.error ? 'failed' : 'sent',
+    provider_id: r.id ?? null, error: r.error ?? null, sent_at: r.error ? null : new Date().toISOString(),
+  })
+}
 
 const stripeSecret =
   Deno.env.get('STRIPE_SECRET_KEY_TEST') ??
@@ -70,6 +105,11 @@ Deno.serve(async (req) => {
       if (Object.keys(update).length > 0) {
         await admin.from('bookings').update(update).eq('id', bookingId)
       }
+
+      // Email a receipt (honours the business's email + payment-receipt toggles)
+      try {
+        await sendCardReceipt(admin, bookingId, paid, total)
+      } catch { /* never fail the webhook over an email */ }
     }
   }
 
