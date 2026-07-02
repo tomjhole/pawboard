@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { Plus, Trash2, Pencil, BadgePoundSterling } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { PageHeader, Card, Button, Input, Modal, EmptyState } from '@/components/ui'
+import { PageHeader, Card, Button, Input, Modal, EmptyState, PlanGate } from '@/components/ui'
+import { usePlan } from '@/lib/plans'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -554,6 +555,8 @@ function ExtraRow({
 
 export default function PricingPage() {
   const { business } = useBusinessContext()
+  const { can } = usePlan()
+  const canPricing = can('pricingEngine')
   const [settings,     setSettings]     = useState<PricingSettings | null>(null)
   const [rates,        setRates]        = useState<PricingRate[]>([])
   const [sharingRules, setSharingRules] = useState<SharingRule[]>([])
@@ -701,7 +704,9 @@ export default function PricingPage() {
         backHref="/settings"
       />
 
-      {loading ? (
+      {!canPricing ? (
+        <PlanGate feature="Pricing engine" requiredPlan="PawBoard Professional" />
+      ) : loading ? (
         <Card><p className="text-sm text-slate-400 py-6 text-center">Loading…</p></Card>
       ) : (
         <div className="space-y-5">

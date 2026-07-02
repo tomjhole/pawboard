@@ -5,6 +5,7 @@ import {
   Table, Th, Td, ReportLoading, ReportEmpty, type ReportProps,
 } from './parts'
 import { fmtMoney, fmtDate, pct } from '@/lib/reports'
+import { outstandingOf } from '@/lib/payments'
 
 const COMMITTED = ['confirmed', 'details_outstanding', 'ready', 'checked_in', 'due_out', 'checked_out'] as const
 
@@ -14,6 +15,7 @@ type RevBooking = {
   end_date: string
   status: string
   total_amount: number | null
+  amount_paid: number
   deposit_amount: number | null
   deposit_paid: boolean
   balance_paid: boolean
@@ -21,8 +23,6 @@ type RevBooking = {
 }
 
 const ownerName = (b: RevBooking) => b.owner ? `${b.owner.first_name} ${b.owner.last_name}` : '—'
-const outstandingOf = (b: RevBooking) =>
-  Math.max(0, (b.total_amount ?? 0) - (b.deposit_paid ? (b.deposit_amount ?? 0) : 0))
 
 // ─── Revenue summary ─────────────────────────────────────────────────────────
 
@@ -34,7 +34,7 @@ export function RevenueSummary({ range, currency, canExport }: ReportProps) {
     setLoading(true)
     const { data } = await supabase
       .from('bookings')
-      .select('id, start_date, end_date, status, total_amount, deposit_amount, deposit_paid, balance_paid, owner:owner_id ( first_name, last_name )')
+      .select('id, start_date, end_date, status, total_amount, amount_paid, deposit_amount, deposit_paid, balance_paid, owner:owner_id ( first_name, last_name )')
       .gte('start_date', range.from).lte('start_date', range.to)
       .neq('status', 'cancelled')
       .order('start_date')
@@ -105,7 +105,7 @@ export function OutstandingBalances({ currency, canExport }: ReportProps) {
     setLoading(true)
     const { data } = await supabase
       .from('bookings')
-      .select('id, start_date, end_date, status, total_amount, deposit_amount, deposit_paid, balance_paid, owner:owner_id ( first_name, last_name )')
+      .select('id, start_date, end_date, status, total_amount, amount_paid, deposit_amount, deposit_paid, balance_paid, owner:owner_id ( first_name, last_name )')
       .eq('balance_paid', false)
       .not('total_amount', 'is', null)
       .in('status', COMMITTED)

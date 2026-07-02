@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Plus, Copy, Check, UserMinus, UserPlus, ShieldAlert } from 'lucide-react'
+import { Plus, Copy, Check, UserMinus, UserPlus, ShieldAlert, Pencil } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { PageHeader, Card, Button, Input, Select, Modal } from '@/components/ui'
+import { usePlan } from '@/lib/plans'
+import { PageHeader, Card, Button, Input, Select, Modal, PlanGate } from '@/components/ui'
 import {
   ROLE_LABELS, ROLE_COLOURS, canManageStaff,
   type StaffRole,
@@ -105,6 +106,68 @@ function InviteModal({
   )
 }
 
+// ─── Edit name modal ──────────────────────────────────────────────────────────
+
+function EditNameModal({
+  open,
+  member,
+  onClose,
+  onSaved,
+}: {
+  open:    boolean
+  member:  StaffUser | null
+  onClose: () => void
+  onSaved: (id: string, firstName: string, lastName: string) => void
+}) {
+  const [firstName, setFirstName] = useState('')
+  const [lastName,  setLastName]  = useState('')
+  const [saving,    setSaving]    = useState(false)
+  const [error,     setError]     = useState<string | null>(null)
+
+  useEffect(() => {
+    if (open && member) {
+      setFirstName(member.first_name)
+      setLastName(member.last_name)
+      setError(null)
+    }
+  }, [open, member])
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!member) return
+    if (!firstName.trim() || !lastName.trim()) { setError('Enter a first and last name.'); return }
+    setSaving(true); setError(null)
+    const { error: updErr } = await supabase
+      .from('staff_users')
+      .update({ first_name: firstName.trim(), last_name: lastName.trim() })
+      .eq('id', member.id)
+    setSaving(false)
+    if (updErr) { setError(updErr.message); return }
+    onSaved(member.id, firstName.trim(), lastName.trim())
+    onClose()
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} size="sm"
+      title="Edit name"
+      footer={<>
+        <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
+        <Button form="edit-staff-name-form" type="submit" loading={saving}>Save changes</Button>
+      </>}
+    >
+      <form id="edit-staff-name-form" onSubmit={handleSubmit} className="space-y-3" noValidate>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="grid grid-cols-2 gap-3">
+          <Input id="esn-first" label="First name" required autoFocus
+            value={firstName} onChange={e => setFirstName(e.target.value)} />
+          <Input id="esn-last" label="Last name" required
+            value={lastName} onChange={e => setLastName(e.target.value)} />
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
 // ─── Invite link modal ────────────────────────────────────────────────────────
 
 function InviteLinkModal({
@@ -170,12 +233,14 @@ function StaffRow({
   isOwner,
   onRoleChange,
   onActiveChange,
+  onEditName,
 }: {
   member:         StaffUser
   isSelf:         boolean
   isOwner:        boolean
   onRoleChange:   (id: string, role: StaffRole) => Promise<void>
   onActiveChange: (id: string, active: boolean) => Promise<void>
+  onEditName:     (member: StaffUser) => void
 }) {
   const [roleSaving,   setRoleSaving]   = useState(false)
   const [activeSaving, setActiveSaving] = useState(false)
@@ -221,6 +286,16 @@ function StaffRow({
         <p className="text-xs text-slate-500 truncate mt-0.5">{member.email}</p>
         {roleError && <p className="text-xs text-red-600 mt-0.5">{roleError}</p>}
       </div>
+
+      {isOwner && (
+        <button
+          onClick={() => onEditName(member)}
+          title="Edit name"
+          className="p-1.5 rounded-md text-slate-300 hover:text-slate-600 hover:bg-slate-50 transition-colors flex-shrink-0"
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      )}
 
       {isOwner && !isSelf && (
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -302,6 +377,7 @@ function PendingInviteRow({
 
 export default function StaffPage() {
   const { staffUser, isAdmin } = useBusinessContext()
+  const { within } = usePlan()
 
   const [staff,          setStaff]          = useState<StaffUser[]>([])
   const [pendingInvites, setPendingInvites]  = useState<PendingInvite[]>([])
@@ -310,6 +386,7 @@ export default function StaffPage() {
   const [linkToken,      setLinkToken]       = useState<string | null>(null)
   const [linkEmail,      setLinkEmail]       = useState('')
   const [linkOpen,       setLinkOpen]        = useState(false)
+  const [editingName,    setEditingName]     = useState<StaffUser | null>(null)
 
   const isOwner = isAdmin || (staffUser?.role === 'owner')
 
@@ -379,12 +456,19 @@ export default function StaffPage() {
         backHref="/settings"
         action={
           isOwner && (
-            <Button icon={<Plus className="w-4 h-4" />} onClick={() => setInviteOpen(true)}>
+            <Button icon={<Plus className="w-4 h-4" />} onClick={() => setInviteOpen(true)}
+              disabled={!within('maxStaffUsers', activeStaff.length + pendingInvites.length)}>
               Invite staff
             </Button>
           )
         }
       />
+
+      {isOwner && !within('maxStaffUsers', activeStaff.length + pendingInvites.length) && (
+        <div className="mb-4">
+          <PlanGate feature="More staff accounts" requiredPlan="PawBoard Professional" limitHit />
+        </div>
+      )}
 
       {loading ? (
         <Card><div className="py-8 text-center text-sm text-slate-400">Loading…</div></Card>
@@ -402,6 +486,7 @@ export default function StaffPage() {
                     isOwner={isOwner}
                     onRoleChange={handleRoleChange}
                     onActiveChange={handleActiveChange}
+                    onEditName={setEditingName}
                   />
                 ))}
               </ul>
@@ -442,6 +527,7 @@ export default function StaffPage() {
                     isOwner={isOwner}
                     onRoleChange={handleRoleChange}
                     onActiveChange={handleActiveChange}
+                    onEditName={setEditingName}
                   />
                 ))}
               </ul>
@@ -461,6 +547,15 @@ export default function StaffPage() {
         token={linkToken}
         email={linkEmail}
         onClose={() => setLinkOpen(false)}
+      />
+
+      <EditNameModal
+        open={!!editingName}
+        member={editingName}
+        onClose={() => setEditingName(null)}
+        onSaved={(id, firstName, lastName) =>
+          setStaff(prev => prev.map(s => s.id === id ? { ...s, first_name: firstName, last_name: lastName } : s))
+        }
       />
     </div>
   )

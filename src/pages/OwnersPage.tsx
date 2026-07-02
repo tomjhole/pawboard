@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, Search, ChevronRight, Users } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { PageHeader, Card, Button, Input, Textarea, Modal, EmptyState } from '@/components/ui'
+import { usePlan } from '@/lib/plans'
+import { canEdit as canEditRole } from '@/lib/roles'
+import { PageHeader, Card, Button, Input, Textarea, Modal, EmptyState, PlanGate } from '@/components/ui'
 import type { Database } from '@/types/database'
 
 type Owner = Database['public']['Tables']['owners']['Row']
@@ -343,7 +345,9 @@ function OwnerRow({ owner }: { owner: Owner }) {
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function OwnersPage() {
-  const { business } = useBusinessContext()
+  const { business, staffUser, isAdmin } = useBusinessContext()
+  const { within } = usePlan()
+  const canEdit = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
 
   const [owners,    setOwners]    = useState<Owner[]>([])
   const [loading,   setLoading]   = useState(true)
@@ -404,11 +408,20 @@ export default function OwnersPage() {
         title="Owners"
         description="Customer and household records"
         action={
-          <Button icon={<Plus className="w-4 h-4" />} onClick={() => setModalOpen(true)}>
-            Add owner
-          </Button>
+          canEdit ? (
+            <Button icon={<Plus className="w-4 h-4" />} onClick={() => setModalOpen(true)}
+              disabled={!within('maxOwners', owners.length)}>
+              Add owner
+            </Button>
+          ) : undefined
         }
       />
+
+      {canEdit && !within('maxOwners', owners.length) && (
+        <div className="mb-4">
+          <PlanGate feature="More owner records" requiredPlan="PawBoard Professional" limitHit />
+        </div>
+      )}
 
       {!loading && owners.length > 0 && (
         <div className="relative mb-4">
@@ -432,9 +445,11 @@ export default function OwnersPage() {
             title="No owners yet"
             description="Add your first owner to get started. You can always fill in the full details later."
             action={
-              <Button variant="secondary" icon={<Plus className="w-4 h-4" />} onClick={() => setModalOpen(true)}>
-                Add owner
-              </Button>
+              canEdit ? (
+                <Button variant="secondary" icon={<Plus className="w-4 h-4" />} onClick={() => setModalOpen(true)}>
+                  Add owner
+                </Button>
+              ) : undefined
             }
           />
         ) : filtered.length === 0 ? (

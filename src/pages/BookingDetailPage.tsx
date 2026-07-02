@@ -6,17 +6,18 @@ import { logAudit } from '@/lib/audit'
 import { notify } from '@/lib/notify'
 import { AuditLog } from '@/components/AuditLog'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { canDestructiveAction } from '@/lib/roles'
+import { canDestructiveAction, canEdit as canEditRole } from '@/lib/roles'
 import { usePlan } from '@/lib/plans'
-import { PageHeader, Card, Button, Modal, Input, Textarea, StatusBadge } from '@/components/ui'
+import { PageHeader, Card, Button, Modal, Input, Textarea, StatusBadge, PaymentBadge, PlanGate } from '@/components/ui'
 import {
   type DbBookingStatus, type SpaceWithSpecies,
-  computeDisplayStatus, dbStatusToUi, formatBookingDate, SPACES_QUERY,
+  computeDisplayStatus, dbStatusToUi, formatBookingDate, SPACES_QUERY, OCCUPYING_STATUSES,
+  type SpaceOccupancy,
 } from '@/pages/BookingsPage'
 import BookingPricing from '@/components/BookingPricing'
 import BookingPayments from '@/components/BookingPayments'
 import StayJournal from '@/components/StayJournal'
-import { loadOutstanding } from '@/lib/payments'
+import { loadOutstanding, paymentStatusOf } from '@/lib/payments'
 import { fmtMoney } from '@/lib/reports'
 import { printBookingReceipt } from '@/lib/receipt'
 
@@ -33,6 +34,9 @@ type BookingDetail = {
   created_at: string
   checked_in_at: string | null
   checked_out_at: string | null
+  total_amount: number | null
+  amount_paid: number
+  deposit_paid: boolean
   owner: {
     id: string
     first_name: string
@@ -312,54 +316,71 @@ interface PetSpaceSelectProps {
   bp: BookingDetail['booking_pets'][number]
   spaces: SpaceWithSpecies[]
   booking: BookingDetail
+  /** Space ids already taken by this booking's other pets — counts against capacity too. */
+  siblingSpaceIds: string[]
   onChanged: () => void
 }
 
-function PetSpaceSelect({ bp, spaces, booking, onChanged }: PetSpaceSelectProps) {
+function PetSpaceSelect({ bp, spaces, booking, siblingSpaceIds, onChanged }: PetSpaceSelectProps) {
   const [saving,      setSaving]      = useState(false)
   const [spaceError,  setSpaceError]  = useState<string | null>(null)
-  const [occupancyMap, setOccupancyMap] = useState<Map<string, number>>(new Map())
+  const [occupancyMap, setOccupancyMap] = useState<Map<string, SpaceOccupancy>>(new Map())
 
   const currentAssignment = bp.booking_space_assignments[0] ?? null
   const currentSpaceId    = currentAssignment?.space?.id ?? ''
   const petSpeciesId      = bp.pet?.species?.id ?? ''
   const petSpeciesName    = bp.pet?.species?.name ?? ''
+  const ownerId           = booking.owner?.id ?? ''
 
-  // Fetch how many OTHER confirmed/active bookings occupy each space for these dates.
-  // Excludes the current booking so the already-assigned space isn't shown as unavailable.
+  // Fetch which OTHER confirmed/active bookings occupy each space for these dates,
+  // tracking the count and the owning households. Excludes the current booking.
   useEffect(() => {
     supabase
       .from('bookings')
-      .select('id, booking_pets(booking_space_assignments(id, space_id))')
-      .in('status', ['confirmed', 'checked_in', 'due_out'])
+      .select('id, owner_id, booking_pets(booking_space_assignments(id, space_id))')
+      .in('status', OCCUPYING_STATUSES)
       .neq('id', booking.id)
-      .lte('start_date', booking.end_date)
-      .gte('end_date', booking.start_date)
+      // Strict overlap — checkout day frees the space for a same-day arrival.
+      .lt('start_date', booking.end_date)
+      .gt('end_date', booking.start_date)
       .then(({ data }) => {
-        const map = new Map<string, number>()
+        const map = new Map<string, SpaceOccupancy>()
         for (const b of data ?? []) {
           for (const bpRow of (b as any).booking_pets ?? []) {
             for (const sa of bpRow.booking_space_assignments ?? []) {
-              map.set(sa.space_id, (map.get(sa.space_id) ?? 0) + 1)
+              const occ = map.get(sa.space_id) ?? { count: 0, ownerIds: new Set<string>() }
+              occ.count += 1
+              if ((b as any).owner_id) occ.ownerIds.add((b as any).owner_id)
+              map.set(sa.space_id, occ)
             }
           }
         }
         setOccupancyMap(map)
       })
-  }, [booking.start_date, booking.end_date, currentAssignment?.id])
+  }, [booking.start_date, booking.end_date, booking.id, currentAssignment?.id])
 
   const speciesMatch = (s: SpaceWithSpecies) =>
     !petSpeciesId || s.accommodation_space_species.some(ss => ss.species_id === petSpeciesId)
 
-  const compatibleSpaces   = spaces.filter(s =>  speciesMatch(s))
-  const incompatibleSpaces = spaces.filter(s => !speciesMatch(s))
+  const compatibleSpaces = spaces.filter(s => speciesMatch(s))
 
-  const availableSpaces    = compatibleSpaces.filter(s =>
-    s.id === currentSpaceId || (occupancyMap.get(s.id) ?? 0) < s.max_pets
-  )
-  const fullyBookedSpaces  = compatibleSpaces.filter(s =>
-    s.id !== currentSpaceId && (occupancyMap.get(s.id) ?? 0) >= s.max_pets
-  )
+  // Other pets in this same booking occupy their space too (same household, so
+  // they only add to the count) — fold them in so we don't offer a space a
+  // sibling pet already holds.
+  const siblingCounts = new Map<string, number>()
+  for (const sid of siblingSpaceIds) siblingCounts.set(sid, (siblingCounts.get(sid) ?? 0) + 1)
+  const effectiveCount = (s: SpaceWithSpecies) =>
+    (occupancyMap.get(s.id)?.count ?? 0) + (siblingCounts.get(s.id) ?? 0)
+  // A same-household-only space is blocked if any *other* household already holds it.
+  const householdBlocked = (s: SpaceWithSpecies) =>
+    s.same_household_only &&
+    [...(occupancyMap.get(s.id)?.ownerIds ?? [])].some(o => o !== ownerId)
+
+  const isAvailable = (s: SpaceWithSpecies) =>
+    s.id === currentSpaceId || (effectiveCount(s) < s.max_pets && !householdBlocked(s))
+
+  const availableSpaces    = compatibleSpaces.filter(s => isAvailable(s))
+  const fullyBookedSpaces  = compatibleSpaces.filter(s => !isAvailable(s))
 
   const spacesByArea = useMemo(() => {
     const groups = new Map<string, { areaName: string; spaces: SpaceWithSpecies[] }>()
@@ -384,6 +405,15 @@ function PetSpaceSelect({ bp, spaces, booking, onChanged }: PetSpaceSelectProps)
       }
     }
 
+    // Same-household-only check
+    if (newSpaceId) {
+      const space = spaces.find(s => s.id === newSpaceId)
+      if (space && householdBlocked(space)) {
+        setSpaceError(`${space.name} is already booked by another household for these dates.`)
+        return
+      }
+    }
+
     // Occupancy check — re-query at save time for freshness
     if (newSpaceId) {
       const space = spaces.find(s => s.id === newSpaceId)
@@ -392,8 +422,8 @@ function PetSpaceSelect({ bp, spaces, booking, onChanged }: PetSpaceSelectProps)
           .from('booking_space_assignments')
           .select('id')
           .eq('space_id', newSpaceId)
-          .lte('start_date', booking.end_date)
-          .gte('end_date', booking.start_date)
+          .lt('start_date', booking.end_date)
+          .gt('end_date', booking.start_date)
         if (currentAssignment) {
           query = query.neq('id', currentAssignment.id)
         }
@@ -476,13 +506,6 @@ function PetSpaceSelect({ bp, spaces, booking, onChanged }: PetSpaceSelectProps)
           {fullyBookedSpaces.length > 0 && (
             <optgroup label="⚠ Already booked these dates">
               {fullyBookedSpaces.map(s => (
-                <option key={s.id} value={s.id} disabled>{s.name}</option>
-              ))}
-            </optgroup>
-          )}
-          {incompatibleSpaces.length > 0 && (
-            <optgroup label="⚠ Incompatible species">
-              {incompatibleSpaces.map(s => (
                 <option key={s.id} value={s.id} disabled>{s.name}</option>
               ))}
             </optgroup>
@@ -950,10 +973,11 @@ function CheckInModal({ open, booking, onClose, onConfirm }: {
 
 // ─── CheckOutModal ─────────────────────────────────────────────────────────────
 
-function CheckOutModal({ open, booking, requireBalance, currency, onClose, onConfirm }: {
+function CheckOutModal({ open, booking, requireBalance, canPricing, currency, onClose, onConfirm }: {
   open:           boolean
   booking:        BookingDetail
   requireBalance: boolean
+  canPricing:     boolean
   currency:       string
   onClose:        () => void
   onConfirm:      () => Promise<void>
@@ -983,7 +1007,7 @@ function CheckOutModal({ open, booking, requireBalance, currency, onClose, onCon
     { key: 'condition',  label: 'Pet condition checked — owner happy' },
     { key: 'belongings', label: 'Owner collected all belongings' },
     { key: 'meds',       label: 'Medication / food returned to owner' },
-    { key: 'balance',    label: 'Balance settled / payment confirmed' },
+    ...(canPricing ? [{ key: 'balance', label: 'Balance settled / payment confirmed' }] : []),
   ]
 
   async function handleConfirm() {
@@ -1018,7 +1042,7 @@ function CheckOutModal({ open, booking, requireBalance, currency, onClose, onCon
           </div>
         )}
 
-        {requireBalance && outstanding != null && outstanding > 0 && (
+        {canPricing && requireBalance && outstanding != null && outstanding > 0 && (
           <div className="flex items-center gap-2 rounded-lg bg-rose-50 border border-rose-200 px-3.5 py-2.5">
             <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0" />
             <p className="text-sm text-rose-800 font-medium">
@@ -1042,21 +1066,23 @@ function CheckOutModal({ open, booking, requireBalance, currency, onClose, onCon
           </div>
         </div>
 
-        <div>
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Charges</p>
-          <p className="text-xs text-slate-400 mb-2">Re-estimate from rates or add a final charge before completing check-out.</p>
-          <BookingPricing
-            bookingId={booking.id}
-            startDate={booking.start_date}
-            endDate={booking.end_date}
-            onTotalChanged={() => loadOutstanding(booking.id).then(r => setOutstanding(r.outstanding))}
-            pets={booking.booking_pets.map(bp => ({
-              id:  bp.id,
-              pet: bp.pet ? { id: bp.pet.id, name: bp.pet.name, size: bp.pet.size, species_id: bp.pet.species?.id ?? null } : null,
-              booking_space_assignments: bp.booking_space_assignments,
-            }))}
-          />
-        </div>
+        {canPricing && (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Charges</p>
+            <p className="text-xs text-slate-400 mb-2">Re-estimate from rates or add a final charge before completing check-out.</p>
+            <BookingPricing
+              bookingId={booking.id}
+              startDate={booking.start_date}
+              endDate={booking.end_date}
+              onTotalChanged={() => loadOutstanding(booking.id).then(r => setOutstanding(r.outstanding))}
+              pets={booking.booking_pets.map(bp => ({
+                id:  bp.id,
+                pet: bp.pet ? { id: bp.pet.id, name: bp.pet.name, size: bp.pet.size, species_id: bp.pet.species?.id ?? null } : null,
+                booking_space_assignments: bp.booking_space_assignments,
+              }))}
+            />
+          </div>
+        )}
 
         <div>
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Handover</p>
@@ -1122,6 +1148,7 @@ export default function BookingDetailPage() {
   const { business, settings, staffUser, isAdmin } = useBusinessContext()
   const { can } = usePlan()
   const canDestruct = isAdmin || canDestructiveAction(staffUser?.role ?? 'read_only')
+  const canEdit     = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
   const [tab, setTab] = useState<BookingTab>('overview')
 
   const [booking,        setBooking]        = useState<BookingDetail | null>(null)
@@ -1135,6 +1162,8 @@ export default function BookingDetailPage() {
   const [confirmCancel,  setConfirmCancel]  = useState(false)
   const [checkInOpen,    setCheckInOpen]    = useState(false)
   const [checkOutOpen,   setCheckOutOpen]   = useState(false)
+  const [reopenCharges,  setReopenCharges]  = useState(false)
+  const [autoAssigning,  setAutoAssigning]  = useState(false)
 
   async function load() {
     if (!id) return
@@ -1144,6 +1173,7 @@ export default function BookingDetailPage() {
         .from('bookings')
         .select(`
           id, business_id, status, start_date, end_date, notes, source, created_at, checked_in_at, checked_out_at,
+          total_amount, amount_paid, deposit_paid,
           owner:owner_id (
             id, first_name, last_name, phone, email,
             address_line1, city,
@@ -1186,6 +1216,69 @@ export default function BookingDetailPage() {
 
   useEffect(() => { load() }, [id])
 
+  // Fill in any pets without a space, packing into shared spaces where possible.
+  // Leaves any pet that already has a space untouched.
+  async function autoAssignBookingSpaces() {
+    if (!booking) return
+    const unassigned = booking.booking_pets.filter(bp => !bp.booking_space_assignments[0] && bp.pet)
+    if (unassigned.length === 0) return
+
+    setAutoAssigning(true)
+    try {
+      const { data } = await supabase
+        .from('bookings')
+        .select('id, booking_pets(booking_space_assignments(space_id))')
+        .in('status', OCCUPYING_STATUSES)
+        .neq('id', booking.id)
+        .lt('start_date', booking.end_date)
+        .gt('end_date', booking.start_date)
+
+      const counts = new Map<string, number>()
+      for (const b of (data ?? []) as any[]) {
+        for (const bp of b.booking_pets ?? []) {
+          for (const sa of bp.booking_space_assignments ?? []) {
+            counts.set(sa.space_id, (counts.get(sa.space_id) ?? 0) + 1)
+          }
+        }
+      }
+      // Seed with this booking's own already-assigned pets.
+      for (const bp of booking.booking_pets) {
+        const sid = bp.booking_space_assignments[0]?.space?.id
+        if (sid) counts.set(sid, (counts.get(sid) ?? 0) + 1)
+      }
+
+      for (const bp of unassigned) {
+        const petSpeciesId = bp.pet?.species?.id ?? ''
+        const target = spaces.find(s =>
+          (!petSpeciesId || s.accommodation_space_species.some(ss => ss.species_id === petSpeciesId)) &&
+          (counts.get(s.id) ?? 0) < s.max_pets
+        )
+        if (!target) continue
+        const { error } = await supabase.from('booking_space_assignments').insert({
+          booking_pet_id: bp.id,
+          space_id:       target.id,
+          business_id:    booking.business_id,
+          start_date:     booking.start_date,
+          end_date:       booking.end_date,
+        })
+        if (!error) {
+          counts.set(target.id, (counts.get(target.id) ?? 0) + 1)
+          await logAudit(booking.business_id, {
+            action:      'space_assignment.changed',
+            entity_type: 'booking',
+            entity_id:   booking.id,
+            before: { space: null },
+            after:  { space: target.name },
+            meta:   { pet_name: bp.pet?.name ?? null },
+          })
+        }
+      }
+    } finally {
+      setAutoAssigning(false)
+      load()
+    }
+  }
+
   // Auto-open modals when navigated here from the operations board
   useEffect(() => {
     if (!booking || loading) return
@@ -1220,10 +1313,10 @@ export default function BookingDetailPage() {
         const { data: conflicting } = await supabase
           .from('bookings')
           .select('id, booking_pets(booking_space_assignments(space_id))')
-          .in('status', ['confirmed', 'checked_in', 'due_out'])
+          .in('status', OCCUPYING_STATUSES)
           .neq('id', booking.id)
-          .lte('start_date', form.endDate)
-          .gte('end_date', form.startDate)
+          .lt('start_date', form.endDate)
+          .gt('end_date', form.startDate)
         const otherCounts = new Map<string, number>()
         for (const b of conflicting ?? []) {
           for (const bp of (b as any).booking_pets ?? []) {
@@ -1459,9 +1552,13 @@ export default function BookingDetailPage() {
   const displayStatus = computeDisplayStatus(
     booking.status,
     missingItems.critical.length + missingItems.advisory.length > 0,
+    booking.end_date,
   )
+  // Charges are final once the stay is over or the booking is cancelled.
+  const chargesLocked = booking.status === 'checked_out' || booking.status === 'cancelled'
 
   const journalAvailable = can('stayJournal') && settings?.stay_journal_enabled !== false
+  const canPricing = can('pricingEngine')
   const tabs: { id: BookingTab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'charges',  label: 'Charges & payments' },
@@ -1482,7 +1579,7 @@ export default function BookingDetailPage() {
               <Button variant="danger" onClick={handleDelete} loading={deleting}>Yes, delete</Button>
               <Button variant="secondary" onClick={() => setConfirmDelete(false)} disabled={deleting}>Cancel</Button>
             </div>
-          ) : (
+          ) : !canEdit ? undefined : (
             <div className="flex items-center gap-2">
               <Button
                 variant="secondary"
@@ -1514,6 +1611,7 @@ export default function BookingDetailPage() {
       <AdvisoryPanel items={missingItems.advisory} />
 
       {/* Status action bar */}
+      {canEdit && (
       <StatusActionBar
         booking={booking}
         actionLoading={actionLoading}
@@ -1530,6 +1628,7 @@ export default function BookingDetailPage() {
         onRestore={handleRestore}
         onRecheckIn={handleRecheckIn}
       />
+      )}
 
       <BookingTabs tabs={tabs} active={activeTab} onSelect={setTab} />
 
@@ -1541,7 +1640,10 @@ export default function BookingDetailPage() {
 
           <div className="flex gap-4 py-1.5">
             <dt className="text-sm text-slate-500 w-36 flex-shrink-0">Status</dt>
-            <dd><StatusBadge status={dbStatusToUi(displayStatus)} size="md" /></dd>
+            <dd className="flex items-center gap-2">
+              <StatusBadge status={dbStatusToUi(displayStatus)} size="md" />
+              <PaymentBadge status={paymentStatusOf(booking)} size="md" />
+            </dd>
           </div>
 
           <div className="flex gap-4 py-1.5">
@@ -1620,7 +1722,19 @@ export default function BookingDetailPage() {
       {booking.booking_pets.length > 0 && (
         <div className="mt-4">
           <Card>
-            <SectionHeader title={`Pets (${booking.booking_pets.length})`} />
+            <div className="flex items-center justify-between">
+              <SectionHeader title={`Pets (${booking.booking_pets.length})`} />
+              {canEdit && spaces.length > 0 && booking.booking_pets.some(bp => !bp.booking_space_assignments[0] && bp.pet) && (
+                <button
+                  type="button"
+                  onClick={autoAssignBookingSpaces}
+                  disabled={autoAssigning}
+                  className="text-xs font-medium text-emerald-700 hover:text-emerald-800 transition-colors disabled:opacity-50 mb-3"
+                >
+                  {autoAssigning ? 'Assigning…' : 'Auto-assign'}
+                </button>
+              )}
+            </div>
             <div className="divide-y divide-slate-100 -mx-5">
               {booking.booking_pets.map(bp => {
                 const pet = bp.pet
@@ -1658,6 +1772,10 @@ export default function BookingDetailPage() {
                           bp={bp}
                           spaces={spaces}
                           booking={booking}
+                          siblingSpaceIds={booking.booking_pets
+                            .filter(other => other.id !== bp.id)
+                            .map(other => other.booking_space_assignments[0]?.space?.id)
+                            .filter((id): id is string => !!id)}
                           onChanged={load}
                         />
                       ) : (
@@ -1711,7 +1829,11 @@ export default function BookingDetailPage() {
       )}
       </>)}
 
-      {activeTab === 'charges' && (<>
+      {activeTab === 'charges' && !canPricing && (
+        <PlanGate feature="Pricing & charges" requiredPlan="PawBoard Professional" />
+      )}
+
+      {activeTab === 'charges' && canPricing && (<>
       <div className="flex justify-end">
         <Button size="sm" variant="secondary" icon={<Printer className="w-3.5 h-3.5" />}
           onClick={() => printBookingReceipt(booking.id, business?.name ?? 'Receipt', settings?.currency ?? 'GBP')}>
@@ -1721,11 +1843,26 @@ export default function BookingDetailPage() {
       {/* Pricing */}
       <div className="mt-4">
         <Card>
-          <SectionHeader title="Charges" />
+          <div className="flex items-center justify-between">
+            <SectionHeader title="Charges" />
+            {chargesLocked && !reopenCharges && canDestruct && (
+              <button
+                onClick={() => {
+                  setReopenCharges(true)
+                  if (business) logAudit(business.id, { action: 'booking.reopened', entity_type: 'booking', entity_id: booking.id, meta: { area: 'charges' } })
+                }}
+                className="text-xs font-medium text-slate-400 hover:text-slate-600"
+              >
+                Reopen to edit
+              </button>
+            )}
+          </div>
           <BookingPricing
             bookingId={booking.id}
             startDate={booking.start_date}
             endDate={booking.end_date}
+            locked={(chargesLocked && !reopenCharges) || !canEdit}
+            bookingTotal={booking.total_amount}
             pets={booking.booking_pets.map(bp => ({
               id:  bp.id,
               pet: bp.pet ? {
@@ -1769,6 +1906,7 @@ export default function BookingDetailPage() {
           open={checkOutOpen}
           booking={booking}
           requireBalance={!!settings?.require_balance_before_checkout}
+          canPricing={canPricing}
           currency={settings?.currency ?? 'GBP'}
           onClose={() => setCheckOutOpen(false)}
           onConfirm={handleCheckOutConfirm}

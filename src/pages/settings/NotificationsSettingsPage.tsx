@@ -47,8 +47,8 @@ function Row({ title, description, checked, disabled, onChange }: {
 
 export default function NotificationsSettingsPage() {
   const { business, settings, reload } = useBusinessContext()
-  const { atLeast } = usePlan()
-  const canReminders = atLeast('premium')
+  const { can } = usePlan()
+  const canReminders = can('emailReminders')
 
   const [f, setF] = useState<Fields | null>(null)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')

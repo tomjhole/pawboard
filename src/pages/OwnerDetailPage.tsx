@@ -8,7 +8,7 @@ import { PageHeader, Card, Button } from '@/components/ui'
 import { OwnerModal, type OwnerForm } from '@/pages/OwnersPage'
 import { PetModal, buildPetPayload, type PetForm } from '@/pages/PetsPage'
 import { logAudit } from '@/lib/audit'
-import { canDestructiveAction } from '@/lib/roles'
+import { canDestructiveAction, canEdit as canEditRole } from '@/lib/roles'
 import type { Database } from '@/types/database'
 
 type Owner   = Database['public']['Tables']['owners']['Row']
@@ -185,6 +185,7 @@ export default function OwnerDetailPage() {
   const navigate = useNavigate()
   const { business, settings, staffUser, isAdmin } = useBusinessContext()
   const canDestruct = isAdmin || canDestructiveAction(staffUser?.role ?? 'read_only')
+  const canEdit     = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
 
   const [owner,         setOwner]         = useState<Owner | null>(null)
   const [loading,       setLoading]       = useState(true)
@@ -318,7 +319,7 @@ export default function OwnerDetailPage() {
                 Cancel
               </Button>
             </div>
-          ) : (
+          ) : !canEdit ? undefined : (
             <div className="flex items-center gap-2">
               <Button
                 variant="secondary"

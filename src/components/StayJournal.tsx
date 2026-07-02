@@ -7,6 +7,7 @@ import type { LucideIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { usePlan } from '@/lib/plans'
+import { canEdit as canEditRole } from '@/lib/roles'
 import { Button, Textarea, Modal } from '@/components/ui'
 import { listQueued, flushQueue, submitJournalEntry, type QueuedEntry } from '@/lib/journalQueue'
 import type { Database } from '@/types/database'
@@ -55,8 +56,9 @@ function TypeIcon({ type }: { type: string }) {
 }
 
 export default function StayJournal({ bookingId }: { bookingId: string }) {
-  const { settings, business, staffUser } = useBusinessContext()
+  const { settings, business, staffUser, isAdmin } = useBusinessContext()
   const { can } = usePlan()
+  const canEdit = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
   const authorLabel = staffUser ? `${staffUser.first_name} ${staffUser.last_name}`.trim() : 'Staff'
 
   const [entries, setEntries] = useState<Entry[]>([])
@@ -112,7 +114,9 @@ export default function StayJournal({ bookingId }: { bookingId: string }) {
               <UploadCloud className="w-3.5 h-3.5" /> {queued.length} queued
             </button>
           )}
-          <Button size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setOpen(true)}>Add update</Button>
+          {canEdit && (
+            <Button size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setOpen(true)}>Add update</Button>
+          )}
         </div>
 
         {!online && (

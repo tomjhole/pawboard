@@ -16,6 +16,12 @@ export type AuditAction =
   | 'vaccination.verified'
   | 'space.created'
   | 'space.updated'
+  | 'charge.added'
+  | 'charge.removed'
+  | 'payment.recorded'
+  | 'payment.deleted'
+  | 'invoice.sent'
+  | 'booking.reopened'
 
 interface AuditEntry {
   action:      AuditAction

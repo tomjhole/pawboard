@@ -77,7 +77,7 @@ const DASH_SELECT = `
 // ─── BookingListItem ──────────────────────────────────────────────────────────
 
 function BookingListItem({ booking, dateIso, todayStr }: { booking: DashBooking; dateIso: string; todayStr: string }) {
-  const displayStatus = computeDisplayStatus(booking.status, hasOutstandingDetails(booking))
+  const displayStatus = computeDisplayStatus(booking.status, hasOutstandingDetails(booking), booking.end_date)
   const owner = booking.owner
   const pets  = booking.booking_pets.map(bp => bp.pet).filter(Boolean) as DashPet[]
 
@@ -197,7 +197,7 @@ export default function DashboardPage() {
 
         supabase
           .from('bookings')
-          .select('id', { count: 'exact', head: true })
+          .select('booking_pets(id)')
           .in('status', ['checked_in', 'due_out']),
 
         supabase
@@ -215,7 +215,10 @@ export default function DashboardPage() {
       setArrivals((arrivalsRes.data ?? []) as unknown as DashBooking[])
       setDepartures((departuresRes.data ?? []) as unknown as DashBooking[])
       setEnquiries((enquiriesRes.data ?? []) as unknown as DashBooking[])
-      setBoardingCount(boardingRes.count ?? 0)
+      setBoardingCount(
+        ((boardingRes.data ?? []) as { booking_pets: { id: string }[] }[])
+          .reduce((n, b) => n + (b.booking_pets?.length ?? 0), 0)
+      )
       setTotalSpaces(spacesRes.count ?? 0)
       const occupiedIds = new Set((assignmentsRes.data ?? []).map((r: any) => r.space_id))
       setOccupiedToday(occupiedIds.size)
@@ -236,11 +239,14 @@ export default function DashboardPage() {
     return `${s} – ${e}`
   })()
 
+  // Totals count pets, not bookings (a booking may hold several pets).
+  const petCount = (list: DashBooking[]) => list.reduce((n, b) => n + b.booking_pets.length, 0)
+
   const stats = [
-    { label: 'Pending',        value: loading ? '—' : String(enquiries.length),                    sub: 'enquiries & waiting list', colour: 'text-amber-600'   },
-    { label: 'Arriving',       value: loading ? '—' : String(arrivals.length),                     sub: 'in the next 7 days',       colour: 'text-emerald-600' },
-    { label: 'Departing',      value: loading ? '—' : String(departures.length),                   sub: 'in the next 7 days',       colour: 'text-rose-600'    },
-    { label: 'Boarding now',   value: loading || boardingCount === null ? '—' : String(boardingCount), sub: 'currently checked in',  colour: 'text-indigo-600'  },
+    { label: 'Pending',        value: loading ? '—' : String(petCount(enquiries)),                  sub: 'enquiries & waiting list', colour: 'text-amber-600'   },
+    { label: 'Arriving',       value: loading ? '—' : String(petCount(arrivals)),                   sub: 'in the next 7 days',       colour: 'text-emerald-600' },
+    { label: 'Departing',      value: loading ? '—' : String(petCount(departures)),                 sub: 'in the next 7 days',       colour: 'text-rose-600'    },
+    { label: 'Boarding now',   value: loading || boardingCount === null ? '—' : String(boardingCount), sub: 'pets currently checked in', colour: 'text-indigo-600'  },
     { label: 'Spaces free',    value: loading || availableSpaces === null ? '—' : String(availableSpaces), sub: totalSpaces !== null ? `of ${totalSpaces} total` : '', colour: 'text-slate-700' },
   ]
 

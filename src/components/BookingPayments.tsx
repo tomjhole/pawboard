@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import {
-  Banknote, Landmark, CreditCard, Trash2, CheckCircle, XCircle, Plus, Mail,
+  Banknote, Landmark, CreditCard, Trash2, CheckCircle, XCircle, Plus, Mail, Undo2, Lock,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { usePlan } from '@/lib/plans'
+import { canDestructiveAction, canEdit as canEditRole } from '@/lib/roles'
 import { Button, Input, Textarea, Modal } from '@/components/ui'
 import { fmtMoney } from '@/lib/reports'
 import { notify } from '@/lib/notify'
+import { logAudit } from '@/lib/audit'
 import {
   paidTotal, depositAmount, syncBookingPaymentFlags, startCardCheckout,
   type Payment, type PaymentMethod, type PaymentKind,
@@ -33,14 +35,18 @@ const STATUS_PILL: Record<string, string> = {
 }
 
 export default function BookingPayments({ bookingId }: { bookingId: string }) {
-  const { settings, business } = useBusinessContext()
+  const { settings, business, staffUser, isAdmin } = useBusinessContext()
   const { can } = usePlan()
   const currency = settings?.currency ?? 'GBP'
+  const canManage = isAdmin || (staffUser ? canDestructiveAction(staffUser.role) : false)
+  const canEdit   = isAdmin || (staffUser ? canEditRole(staffUser.role) : false)
 
   const [payments, setPayments] = useState<Payment[]>([])
   const [total,    setTotal]    = useState<number | null>(null)
   const [loading,  setLoading]  = useState(true)
   const [record,   setRecord]   = useState<PaymentMethod | null>(null)
+  const [refundOpen, setRefundOpen] = useState(false)
+  const [reopened, setReopened] = useState(false)
   const [banner,   setBanner]   = useState<'success' | 'cancelled' | null>(null)
   const [cardError, setCardError] = useState<string | null>(null)
   const [cardBusy,  setCardBusy]  = useState(false)
@@ -79,6 +85,8 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
   const paid        = paidTotal(payments)
   const outstanding = total != null ? Math.max(0, total - paid) : null
   const hasPaidDeposit = payments.some(p => p.kind === 'deposit' && p.status === 'paid')
+  // Locked once fully settled (nothing outstanding), unless a manager reopens it.
+  const paymentsLocked = total != null && outstanding != null && outstanding <= 0.001 && paid > 0 && !reopened
 
   const stripeOn  = !!settings?.stripe_enabled
   const canCard   = can('stripePayments')
@@ -91,8 +99,15 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
     // on success the browser redirects away
   }
 
-  async function deletePayment(id: string) {
-    await supabase.from('payments').delete().eq('id', id)
+  async function deletePayment(p: Payment) {
+    await supabase.from('payments').delete().eq('id', p.id)
+    await syncBookingPaymentFlags(bookingId)
+    if (business) {
+      logAudit(business.id, {
+        action: 'payment.deleted', entity_type: 'booking', entity_id: bookingId,
+        meta: { amount: Number(p.amount), method: p.method, kind: p.kind },
+      })
+    }
     await load()
   }
 
@@ -106,6 +121,9 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
     setEmailMsg(r.sent
       ? (kind === 'invoice' ? 'Invoice emailed ✓' : 'Receipt emailed ✓')
       : (r.reason ?? 'Could not send the email.'))
+    if (kind === 'invoice' && r.sent) {
+      logAudit(business.id, { action: 'invoice.sent', entity_type: 'booking', entity_id: bookingId })
+    }
   }
 
   return (
@@ -161,8 +179,8 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
                   <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_PILL[p.status] ?? 'bg-slate-100 text-slate-500'}`}>
                     {p.status}
                   </span>
-                  {p.method !== 'stripe' && (
-                    <button onClick={() => deletePayment(p.id)}
+                  {p.method !== 'stripe' && !paymentsLocked && canEdit && (
+                    <button onClick={() => deletePayment(p)}
                       className="p-1 text-slate-300 hover:text-rose-500 transition-colors" title="Remove">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -174,8 +192,26 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
         )}
 
         {/* Actions */}
+        {canEdit && (
         <div className="px-5 py-3 border-t border-slate-100 space-y-2">
           {cardError && <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{cardError}</div>}
+
+          {paymentsLocked ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-700">
+                <CheckCircle className="w-4 h-4" /> Paid in full
+              </span>
+              <Button size="sm" variant="secondary" icon={<Undo2 className="w-3.5 h-3.5" />} onClick={() => setRefundOpen(true)}>
+                Record refund
+              </Button>
+              {canManage && (
+                <button onClick={() => setReopened(true)}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-600 ml-auto">
+                  <Lock className="w-3.5 h-3.5" /> Reopen payments
+                </button>
+              )}
+            </div>
+          ) : (
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="secondary" icon={<Banknote className="w-3.5 h-3.5" />} onClick={() => setRecord('cash')}>
               Record cash
@@ -200,7 +236,13 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
                 Take balance (card)
               </Button>
             ))}
+            {paid > 0 && (
+              <Button size="sm" variant="ghost" icon={<Undo2 className="w-3.5 h-3.5" />} onClick={() => setRefundOpen(true)}>
+                Record refund
+              </Button>
+            )}
           </div>
+          )}
 
           {/* Email invoice / receipt (owner needs an email on file) */}
           {(total != null && (paid > 0 || (outstanding ?? 0) > 0)) && (
@@ -231,6 +273,7 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
             </p>
           )}
         </div>
+        )}
       </div>
 
       {record && (
@@ -241,9 +284,26 @@ export default function BookingPayments({ bookingId }: { bookingId: string }) {
           currency={currency}
           bankDetails={settings?.bank_transfer_details ?? null}
           defaultAmount={outstanding ?? 0}
+          outstanding={outstanding ?? 0}
           suggestDeposit={paid === 0 && total != null ? depositAmount(total, settings?.deposit_type ?? 'percentage', Number(settings?.deposit_value ?? 20)) : null}
           onClose={() => setRecord(null)}
           onSaved={() => { setRecord(null); load() }}
+        />
+      )}
+
+      {refundOpen && (
+        <RecordPaymentModal
+          method="cash"
+          isRefund
+          bookingId={bookingId}
+          businessId={business?.id ?? ''}
+          currency={currency}
+          bankDetails={null}
+          defaultAmount={paid}
+          outstanding={outstanding ?? 0}
+          suggestDeposit={null}
+          onClose={() => setRefundOpen(false)}
+          onSaved={() => { setRefundOpen(false); load() }}
         />
       )}
     </div>
@@ -261,54 +321,70 @@ function Tot({ label, value, tone }: { label: string; value: string; tone?: stri
 
 // ─── Record manual payment ───────────────────────────────────────────────────
 
-function RecordPaymentModal({ method, bookingId, businessId, currency, defaultAmount, suggestDeposit, bankDetails, onClose, onSaved }: {
+function RecordPaymentModal({ method, isRefund = false, bookingId, businessId, currency, defaultAmount, outstanding, suggestDeposit, bankDetails, onClose, onSaved }: {
   method: PaymentMethod
+  isRefund?: boolean
   bookingId: string
   businessId: string
   currency: string
   defaultAmount: number
+  outstanding: number
   suggestDeposit: number | null
   bankDetails: string | null
   onClose: () => void
   onSaved: () => void
 }) {
-  const [amount, setAmount] = useState(defaultAmount > 0 ? String(defaultAmount) : '')
-  const [kind,   setKind]   = useState<PaymentKind>(suggestDeposit && Number(amount) === suggestDeposit ? 'deposit' : 'full')
+  const [amount, setAmount] = useState(defaultAmount > 0 ? defaultAmount.toFixed(2) : '')
+  const [kind,   setKind]   = useState<PaymentKind>(isRefund ? 'refund' : (suggestDeposit && Number(amount) === suggestDeposit ? 'deposit' : 'full'))
   const [notes,  setNotes]  = useState('')
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState<string | null>(null)
+
+  // Reformat a valid amount to 2 decimal places (e.g. "126" → "126.00") on blur.
+  function normaliseAmount() {
+    const n = parseFloat(amount)
+    if (!isNaN(n)) setAmount(n.toFixed(2))
+  }
 
   async function save(e: React.FormEvent) {
     e.preventDefault()
     const amt = parseFloat(amount)
     if (isNaN(amt) || amt <= 0) { setError('Enter an amount greater than zero.'); return }
+    if (!isRefund && amt > outstanding + 0.001) {
+      setError(`Amount exceeds the outstanding balance (${fmtMoney(outstanding, currency)}).`); return
+    }
     setSaving(true); setError(null)
+    const effKind: PaymentKind = isRefund ? 'refund' : kind
     const { data: { user } } = await supabase.auth.getUser()
     const { data: inserted, error } = await supabase.from('payments').insert({
       booking_id:  bookingId,
       business_id: businessId,
       amount:      amt,
       method,
-      kind,
+      kind:        effKind,
       status:      'paid',
       paid_at:     new Date().toISOString(),
       notes:       notes.trim() || null,
       created_by:  user?.id ?? null,
     }).select('id').single()
     if (error) { setError(error.message); setSaving(false); return }
-    await syncBookingPaymentFlags(bookingId, kind)
-    // Auto-send a receipt (honours the business's notify_payment_receipt toggle)
-    notify('payment_receipt', { businessId, relatedId: bookingId, extra: { payment_id: inserted?.id } })
+    await syncBookingPaymentFlags(bookingId)
+    logAudit(businessId, {
+      action: 'payment.recorded', entity_type: 'booking', entity_id: bookingId,
+      meta: { amount: amt, method, kind: effKind },
+    })
+    // Auto-send a receipt for real payments (honours the notify_payment_receipt toggle)
+    if (!isRefund) notify('payment_receipt', { businessId, relatedId: bookingId, extra: { payment_id: inserted?.id } })
     setSaving(false)
     onSaved()
   }
 
   return (
     <Modal open onClose={onClose} size="sm"
-      title={method === 'cash' ? 'Record cash payment' : 'Record bank transfer'}
+      title={isRefund ? 'Record refund' : (method === 'cash' ? 'Record cash payment' : 'Record bank transfer')}
       footer={<>
         <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
-        <Button form="rec-pay" type="submit" loading={saving} icon={<Plus className="w-4 h-4" />}>Record payment</Button>
+        <Button form="rec-pay" type="submit" loading={saving} icon={<Plus className="w-4 h-4" />}>{isRefund ? 'Record refund' : 'Record payment'}</Button>
       </>}
     >
       <form id="rec-pay" onSubmit={save} className="space-y-3" noValidate>
@@ -320,25 +396,27 @@ function RecordPaymentModal({ method, bookingId, businessId, currency, defaultAm
           </div>
         )}
         <Input id="rp-amount" label={`Amount (${currency})`} type="number" min="0" step="0.01" required
-          value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" />
-        {suggestDeposit != null && suggestDeposit > 0 && (
-          <button type="button" onClick={() => { setAmount(String(suggestDeposit)); setKind('deposit') }}
+          value={amount} onChange={e => setAmount(e.target.value)} onBlur={normaliseAmount} placeholder="0.00" />
+        {!isRefund && suggestDeposit != null && suggestDeposit > 0 && (
+          <button type="button" onClick={() => { setAmount(suggestDeposit.toFixed(2)); setKind('deposit') }}
             className="text-xs font-medium underline" style={{ color: 'var(--brand-primary)' }}>
             Use deposit amount ({fmtMoney(suggestDeposit, currency)})
           </button>
         )}
-        <div className="space-y-1.5">
-          <label htmlFor="rp-kind" className="block text-sm font-medium text-slate-700">This payment is a…</label>
-          <select id="rp-kind" value={kind} onChange={e => setKind(e.target.value as PaymentKind)}
-            className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[color:var(--brand-primary)]">
-            <option value="deposit">Deposit</option>
-            <option value="balance">Balance</option>
-            <option value="full">Full payment</option>
-            <option value="other">Other</option>
-          </select>
-        </div>
-        <Textarea id="rp-notes" label="Notes (optional)" rows={2}
-          value={notes} onChange={e => setNotes(e.target.value)} placeholder="Reference, who paid, etc." />
+        {!isRefund && (
+          <div className="space-y-1.5">
+            <label htmlFor="rp-kind" className="block text-sm font-medium text-slate-700">This payment is a…</label>
+            <select id="rp-kind" value={kind} onChange={e => setKind(e.target.value as PaymentKind)}
+              className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[color:var(--brand-primary)]">
+              <option value="deposit">Deposit</option>
+              <option value="balance">Balance</option>
+              <option value="full">Full payment</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+        )}
+        <Textarea id="rp-notes" label={isRefund ? 'Reason for refund (optional)' : 'Notes (optional)'} rows={2}
+          value={notes} onChange={e => setNotes(e.target.value)} placeholder={isRefund ? 'Why the refund was issued, how it was paid out, etc.' : 'Reference, who paid, etc.'} />
       </form>
     </Modal>
   )

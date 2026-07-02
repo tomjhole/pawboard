@@ -74,6 +74,13 @@ const FEATURES: FeatureGroup[] = [
       { label: 'Advanced reports & export',  diary: bool(false), professional: bool(false), premium: bool(true) },
     ],
   },
+  {
+    heading: 'Notifications',
+    rows: [
+      { label: 'Automatic email notifications', diary: bool(true),  professional: bool(true),  premium: bool(true) },
+      { label: 'Arrival & vaccination reminders', diary: bool(false), professional: bool(false), premium: bool(true) },
+    ],
+  },
 ]
 
 // ─── Plan styling ─────────────────────────────────────────────────────────────

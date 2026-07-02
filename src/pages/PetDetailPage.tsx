@@ -8,7 +8,7 @@ import { PetModal, buildPetPayload, SIZE_LABELS, type PetWithRelations, type Pet
 import { VaccinationsSection } from '@/components/VaccinationsSection'
 import { AuditLog } from '@/components/AuditLog'
 import { logAudit } from '@/lib/audit'
-import { canDestructiveAction } from '@/lib/roles'
+import { canDestructiveAction, canEdit as canEditRole } from '@/lib/roles'
 import type { Database } from '@/types/database'
 
 type Owner   = Database['public']['Tables']['owners']['Row']
@@ -68,6 +68,7 @@ export default function PetDetailPage() {
   const navigate = useNavigate()
   const { business, staffUser, isAdmin } = useBusinessContext()
   const canDestruct = isAdmin || canDestructiveAction(staffUser?.role ?? 'read_only')
+  const canEdit     = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
 
   const [pet,          setPet]          = useState<PetWithRelations | null>(null)
   const [owners,       setOwners]       = useState<Pick<Owner, 'id' | 'first_name' | 'last_name'>[]>([])
@@ -202,9 +203,11 @@ export default function PetDetailPage() {
                   {vaxIssueCount} vax issue{vaxIssueCount !== 1 ? 's' : ''}
                 </span>
               )}
-              <Button variant="secondary" size="sm" icon={<Pencil className="w-3.5 h-3.5" />} onClick={() => setEditOpen(true)}>
-                Edit
-              </Button>
+              {canEdit && (
+                <Button variant="secondary" size="sm" icon={<Pencil className="w-3.5 h-3.5" />} onClick={() => setEditOpen(true)}>
+                  Edit
+                </Button>
+              )}
               {canDestruct && (
                 <Button
                   variant="secondary" size="sm"

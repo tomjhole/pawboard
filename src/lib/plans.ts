@@ -18,6 +18,7 @@ export type PlanLimits = {
   customSpecies:     boolean  // can add any custom species at all
   customBranding:    boolean  // custom brand colours (logo available on all plans)
   pricingEngine:     boolean  // rates, sharing rules, line items
+  emailReminders:    boolean  // automatic arrival & vaccination-expiry reminder emails
 
   // ── Future features (gates in place; features not yet built) ───────────────
   onlineBooking:     boolean  // owner-facing online booking requests
@@ -70,6 +71,7 @@ export const PLANS: Record<PlanId, Plan> = {
       customSpecies:     false,
       customBranding:    false,
       pricingEngine:     false,
+      emailReminders:    false,
 
       onlineBooking:     false,
       ownerPortal:       false,
@@ -102,6 +104,7 @@ export const PLANS: Record<PlanId, Plan> = {
       customSpecies:     true,
       customBranding:    true,
       pricingEngine:     true,
+      emailReminders:    false,  // Premium
 
       // Owner-facing features live in Premium
       onlineBooking:     false,  // Premium
@@ -137,6 +140,7 @@ export const PLANS: Record<PlanId, Plan> = {
       customSpecies:     true,
       customBranding:    true,
       pricingEngine:     true,
+      emailReminders:    true,
 
       onlineBooking:     true,
       ownerPortal:       true,

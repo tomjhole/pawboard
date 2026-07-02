@@ -2,14 +2,17 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   LogIn, LogOut, AlertCircle, ShieldAlert, StickyNote, ChevronRight,
-  UtensilsCrossed, Dumbbell, Ban, MapPin, Camera,
+  UtensilsCrossed, Dumbbell, Ban, MapPin, Camera, Wallet,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { usePlan } from '@/lib/plans'
-import { StatusBadge, Button } from '@/components/ui'
+import { StatusBadge, PaymentBadge, Button } from '@/components/ui'
 import { AddUpdateModal } from '@/components/StayJournal'
 import { submitJournalEntry } from '@/lib/journalQueue'
+import { outstandingOf, paymentStatusOf } from '@/lib/payments'
+import { canEdit as canEditRole } from '@/lib/roles'
+import { fmtMoney } from '@/lib/reports'
 import {
   type DbBookingStatus,
   computeDisplayStatus, hasOutstandingDetails, dbStatusToUi,
@@ -77,7 +80,24 @@ type OpBooking = {
   booking_pets: OpBookingPet[]
 }
 
-type Tab = 'overview' | 'care' | 'alerts'
+type Tab = 'overview' | 'care' | 'alerts' | 'balances'
+
+// Committed statuses that can carry a real balance owed.
+const OWED_STATUSES = ['confirmed', 'details_outstanding', 'ready', 'checked_in', 'due_out', 'checked_out'] as const
+
+// Committed-but-not-yet-arrived statuses (awaiting check-in).
+const ARRIVAL_STATUSES = ['confirmed', 'details_outstanding', 'ready'] as const
+
+type OwedBooking = {
+  id: string
+  start_date: string
+  end_date: string
+  status: string
+  total_amount: number | null
+  amount_paid: number
+  deposit_paid: boolean
+  owner: { first_name: string; last_name: string } | null
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -231,10 +251,13 @@ function BookingRow({
   onAction?:     (id: string) => void
 }) {
   const pets    = petList(booking)
-  const display = computeDisplayStatus(booking.status, hasOutstandingDetails(booking))
+  const display = computeDisplayStatus(booking.status, hasOutstandingDetails(booking), booking.end_date)
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0 hover:bg-slate-50/60 transition-colors">
+    <Link
+      to={`/bookings/${booking.id}`}
+      className="flex items-center gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0 hover:bg-slate-50/60 transition-colors"
+    >
       <PetAvatars pets={pets} />
 
       <div className="flex-1 min-w-0">
@@ -251,7 +274,7 @@ function BookingRow({
         <StatusBadge status={dbStatusToUi(display)} />
       </div>
 
-      {action && onAction ? (
+      {action && onAction && (
         <Button
           size="sm"
           variant={action === 'check_in' ? 'primary' : 'secondary'}
@@ -259,28 +282,14 @@ function BookingRow({
             ? <LogIn  className="w-3.5 h-3.5" />
             : <LogOut className="w-3.5 h-3.5" />}
           loading={actionLoading}
-          onClick={() => onAction(booking.id)}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onAction(booking.id) }}
         >
           {action === 'check_in' ? 'Check in' : 'Check out'}
         </Button>
-      ) : (
-        <Link
-          to={`/bookings/${booking.id}`}
-          className="p-1.5 text-slate-300 hover:text-slate-500 transition-colors flex-shrink-0"
-        >
-          <ChevronRight className="w-4 h-4" />
-        </Link>
       )}
 
-      {action && onAction && (
-        <Link
-          to={`/bookings/${booking.id}`}
-          className="p-1.5 text-slate-300 hover:text-slate-500 transition-colors flex-shrink-0"
-        >
-          <ChevronRight className="w-4 h-4" />
-        </Link>
-      )}
-    </div>
+      <ChevronRight className="w-4 h-4 text-slate-300 flex-shrink-0" />
+    </Link>
   )
 }
 
@@ -422,6 +431,7 @@ function CareChecklist({
   onToggle,
   dateRelation,
   selectedDate,
+  canEdit,
   onAddJournal,
 }: {
   bookings:     OpBooking[]
@@ -430,6 +440,7 @@ function CareChecklist({
   onToggle:     (bookingPetId: string, careType: string) => void
   dateRelation: 'today' | 'past' | 'future'
   selectedDate: string
+  canEdit:      boolean
   onAddJournal?: (bookingId: string) => void
 }) {
   const rows: { booking: OpBooking; bp: OpBookingPet; pet: OpPet; space: OpSpace | null }[] = []
@@ -474,7 +485,7 @@ function CareChecklist({
         const feedsDone    = feedLabels.filter((_, i) => careLog.has(`${bp.id}:feed_${i + 1}`)).length
         const exercised    = careLog.has(`${bp.id}:exercise`)
         const instructions = bp.feeding_instructions ?? pet.feeding_instructions
-        const locked       = dateRelation === 'future'
+        const locked       = dateRelation === 'future' || !canEdit
         const location     = space
           ? [space.area?.name, space.name].filter(Boolean).join(' · ')
           : null
@@ -582,9 +593,10 @@ function CareChecklist({
 
 // ─── DayNote ──────────────────────────────────────────────────────────────────
 
-function DayNote({ date, businessId }: { date: string; businessId: string }) {
+function DayNote({ date, businessId, canEdit }: { date: string; businessId: string; canEdit: boolean }) {
   const [text,      setText]      = useState('')
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const [expanded,  setExpanded]  = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -635,8 +647,11 @@ function DayNote({ date, businessId }: { date: string; businessId: string }) {
       <textarea
         value={text}
         onChange={e => handleChange(e.target.value)}
-        placeholder="Staff handover note, anything unusual today…"
-        rows={2}
+        onFocus={() => setExpanded(true)}
+        onBlur={() => setExpanded(false)}
+        readOnly={!canEdit}
+        placeholder={canEdit ? 'Staff handover note, anything unusual today…' : 'No note for this day'}
+        rows={expanded ? 6 : 2}
         className="w-full px-4 py-3 text-sm text-slate-700 resize-none focus:outline-none placeholder:text-slate-300"
       />
     </div>
@@ -653,16 +668,16 @@ function TabBar({ tabs, active, onSelect }: {
   onSelect: (key: Tab) => void
 }) {
   return (
-    <div className="flex border-b border-slate-200 mb-5 -mt-1">
+    <div className="flex flex-wrap items-center gap-1 p-1 mb-5 bg-slate-100 rounded-xl">
       {tabs.map(t => (
         <button
           key={t.key}
           onClick={() => onSelect(t.key)}
           className={[
-            'flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors',
+            'flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all',
             active === t.key
-              ? 'border-[color:var(--brand-primary)] text-[color:var(--brand-primary)]'
-              : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300',
+              ? 'bg-white text-slate-900 shadow-sm'
+              : 'text-slate-500 hover:text-slate-800',
           ].join(' ')}
         >
           {t.label}
@@ -671,7 +686,7 @@ function TabBar({ tabs, active, onSelect }: {
               'text-xs font-semibold px-1.5 py-0.5 rounded-full leading-none',
               t.badgeCls ?? (active === t.key
                 ? 'bg-[color:var(--brand-primary)]/15 text-[color:var(--brand-primary)]'
-                : 'bg-slate-100 text-slate-500'),
+                : 'bg-slate-200 text-slate-600'),
             ].join(' ')}>
               {t.badge}
             </span>
@@ -685,10 +700,11 @@ function TabBar({ tabs, active, onSelect }: {
 // ─── OperationsPage ───────────────────────────────────────────────────────────
 
 export default function OperationsPage() {
-  const { business, settings, staffUser } = useBusinessContext()
+  const { business, settings, staffUser, isAdmin } = useBusinessContext()
   const { can }      = usePlan()
   const navigate     = useNavigate()
   const [searchParams] = useSearchParams()
+  const canEdit      = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
   const journalEnabled = can('stayJournal') && settings?.stay_journal_enabled !== false
   const journalAuthor  = staffUser ? `${staffUser.first_name} ${staffUser.last_name}`.trim() : 'Staff'
   const [journalFor, setJournalFor] = useState<string | null>(null)
@@ -703,19 +719,32 @@ export default function OperationsPage() {
 
   const [loading,       setLoading]       = useState(true)
   const [arriving,      setArriving]      = useState<OpBooking[]>([])
+  const [overdueArrivals, setOverdueArrivals] = useState<OpBooking[]>([])
   const [boarding,      setBoarding]      = useState<OpBooking[]>([])
+  const [owed,          setOwed]          = useState<OwedBooking[]>([])
   const [careLog,       setCareLog]       = useState<Set<string>>(new Set())
   const [careToggling,  setCareToggling]  = useState<Set<string>>(new Set())
 
   const load = useCallback(async () => {
     if (!business) return
     setLoading(true)
-    const [arrivingRes, boardingRes, careRes] = await Promise.all([
+    const [arrivingRes, overdueArrRes, boardingRes, careRes, owedRes] = await Promise.all([
       supabase
         .from('bookings')
         .select(OP_SELECT)
         .eq('start_date', selectedDate)
         .not('status', 'in', '(cancelled,checked_out,checked_in,due_out,enquiry,waiting_list)')
+        .order('start_date'),
+
+      // Overdue arrivals: committed, still awaiting check-in, arrival date has
+      // passed but the stay window still covers today (would otherwise vanish
+      // from the board once the arrival day is behind us).
+      supabase
+        .from('bookings')
+        .select(OP_SELECT)
+        .in('status', ARRIVAL_STATUSES)
+        .lt('start_date', selectedDate)
+        .gte('end_date', selectedDate)
         .order('start_date'),
 
       supabase
@@ -728,13 +757,26 @@ export default function OperationsPage() {
         .from('daily_care_log')
         .select('booking_pet_id, care_type')
         .eq('log_date', selectedDate),
+
+      supabase
+        .from('bookings')
+        .select('id, start_date, end_date, status, total_amount, amount_paid, deposit_paid, owner:owner_id ( first_name, last_name )')
+        .eq('balance_paid', false)
+        .not('total_amount', 'is', null)
+        .in('status', OWED_STATUSES)
+        .order('start_date'),
     ])
     setArriving((arrivingRes.data ?? []) as unknown as OpBooking[])
+    setOverdueArrivals((overdueArrRes.data ?? []) as unknown as OpBooking[])
     setBoarding((boardingRes.data ?? []) as unknown as OpBooking[])
     setCareLog(new Set(
       ((careRes.data ?? []) as { booking_pet_id: string; care_type: string }[])
         .map(r => `${r.booking_pet_id}:${r.care_type}`)
     ))
+    const owedList = ((owedRes.data ?? []) as unknown as OwedBooking[])
+      .filter(b => outstandingOf(b) > 0)
+      .sort((a, b) => outstandingOf(b) - outstandingOf(a))
+    setOwed(owedList)
     setLoading(false)
   }, [business, selectedDate])
 
@@ -797,27 +839,28 @@ export default function OperationsPage() {
 
   // ─── Derived data ─────────────────────────────────────────────────────────
 
-  const dueOut     = useMemo(() => boarding.filter(b => b.end_date === selectedDate),  [boarding, selectedDate])
-  const currentlyIn = useMemo(() => boarding.filter(b => b.end_date !== selectedDate), [boarding, selectedDate])
+  const overdue     = useMemo(() => boarding.filter(b => b.end_date < selectedDate),  [boarding, selectedDate])
+  const dueOut      = useMemo(() => boarding.filter(b => b.end_date === selectedDate), [boarding, selectedDate])
+  const currentlyIn = useMemo(() => boarding.filter(b => b.end_date > selectedDate),  [boarding, selectedDate])
 
   const detailsOutstanding = useMemo(
-    () => [...arriving, ...boarding].filter(b => hasOutstandingDetails(b)),
-    [arriving, boarding],
+    () => [...arriving, ...overdueArrivals, ...boarding].filter(b => hasOutstandingDetails(b)),
+    [arriving, overdueArrivals, boarding],
   )
 
   const vaccinationIssues = useMemo(() => {
     const rows: { booking: OpBooking; pet: OpPet }[] = []
-    for (const b of [...arriving, ...boarding]) {
+    for (const b of [...arriving, ...overdueArrivals, ...boarding]) {
       for (const bp of b.booking_pets) {
         if (bp.pet && !hasVerifiedVax(bp.pet)) rows.push({ booking: b, pet: bp.pet })
       }
     }
     return rows
-  }, [arriving, boarding])
+  }, [arriving, overdueArrivals, boarding])
 
   const treatmentIssues = useMemo(() => {
     const rows: { booking: OpBooking; pet: OpPet; issues: TreatmentIssue[] }[] = []
-    for (const b of [...arriving, ...boarding]) {
+    for (const b of [...arriving, ...overdueArrivals, ...boarding]) {
       for (const bp of b.booking_pets) {
         if (!bp.pet) continue
         const issues = getTreatmentIssues(bp.pet)
@@ -825,7 +868,7 @@ export default function OperationsPage() {
       }
     }
     return rows
-  }, [arriving, boarding])
+  }, [arriving, overdueArrivals, boarding])
 
   // Care completion stats (for badge)
   const careStats = useMemo(() => {
@@ -845,6 +888,10 @@ export default function OperationsPage() {
   }, [boarding, careLog])
 
   const totalAlerts = detailsOutstanding.length + vaccinationIssues.length + treatmentIssues.length
+  const owedTotal = useMemo(() => owed.reduce((s, b) => s + outstandingOf(b), 0), [owed])
+
+  // Stat-strip totals count pets, not bookings (a booking may hold several pets).
+  const petCount = (list: OpBooking[]) => list.reduce((n, b) => n + b.booking_pets.length, 0)
 
   // ─── Tab definitions ──────────────────────────────────────────────────────
 
@@ -869,6 +916,12 @@ export default function OperationsPage() {
       label:    'Alerts',
       badge:    totalAlerts > 0 ? totalAlerts : undefined,
       badgeCls: totalAlerts > 0 ? 'bg-rose-100 text-rose-600' : undefined,
+    },
+    {
+      key:      'balances',
+      label:    'Balances',
+      badge:    owed.length > 0 ? owed.length : undefined,
+      badgeCls: owed.length > 0 ? 'bg-amber-100 text-amber-700' : undefined,
     },
   ]
 
@@ -922,20 +975,22 @@ export default function OperationsPage() {
       </div>
 
       {/* Stat strip — always visible */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-        {[
-          { label: 'Arriving',  value: arriving.length,  colour: 'text-emerald-600', onClick: () => goTab('overview') },
-          { label: 'Due out',   value: dueOut.length,    colour: 'text-rose-600',    onClick: () => goTab('overview') },
-          { label: 'Boarding',  value: boarding.length,  colour: 'text-indigo-600',  onClick: () => goTab('care')     },
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+        {([
+          { label: 'Arriving',  value: petCount(arriving),  colour: 'text-emerald-600', onClick: () => goTab('overview') },
+          { label: 'Overdue',   value: petCount(overdue),   colour: 'text-red-600',     onClick: () => goTab('overview') },
+          { label: 'Due out',   value: petCount(dueOut),    colour: 'text-rose-600',    onClick: () => goTab('overview') },
+          { label: 'Boarding',  value: petCount(boarding),  colour: 'text-indigo-600',  onClick: () => goTab('care')     },
           { label: 'Alerts',    value: totalAlerts,      colour: 'text-amber-600',   onClick: () => goTab('alerts')   },
-        ].map(s => (
+          { label: 'Owed',      value: fmtMoney(owedTotal, settings?.currency ?? 'GBP'), colour: owedTotal > 0 ? 'text-amber-600' : 'text-slate-400', onClick: () => goTab('balances'), small: true },
+        ] as { label: string; value: number | string; colour: string; onClick: () => void; small?: boolean }[]).map(s => (
           <button
             key={s.label}
             onClick={s.onClick}
             className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-left hover:bg-slate-50 transition-colors"
           >
             <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">{s.label}</p>
-            <p className={`text-3xl font-bold mt-0.5 ${s.colour}`}>{s.value}</p>
+            <p className={`${s.small ? 'text-2xl' : 'text-3xl'} font-bold mt-0.5 ${s.colour}`}>{s.value}</p>
           </button>
         ))}
       </div>
@@ -946,7 +1001,47 @@ export default function OperationsPage() {
       {/* ── Overview tab ──────────────────────────────────────────────── */}
       {tab === 'overview' && (
         <div className="space-y-4">
-          <DayNote date={selectedDate} businessId={business!.id} />
+          <DayNote date={selectedDate} businessId={business!.id} canEdit={canEdit} />
+
+          {overdue.length > 0 && (
+            <Section
+              title="Overdue checkouts"
+              icon={ShieldAlert}
+              iconCls="text-red-600"
+              count={overdue.length}
+              emptyText=""
+            >
+              {overdue.map(b => (
+                <BookingRow
+                  key={b.id}
+                  booking={b}
+                  action="check_out"
+                  actionLoading={false}
+                  onAction={canEdit ? handleCheckOut : undefined}
+                />
+              ))}
+            </Section>
+          )}
+
+          {overdueArrivals.length > 0 && (
+            <Section
+              title="Overdue arrivals — not checked in"
+              icon={ShieldAlert}
+              iconCls="text-red-600"
+              count={overdueArrivals.length}
+              emptyText=""
+            >
+              {overdueArrivals.map(b => (
+                <BookingRow
+                  key={b.id}
+                  booking={b}
+                  action="check_in"
+                  actionLoading={false}
+                  onAction={canEdit ? handleCheckIn : undefined}
+                />
+              ))}
+            </Section>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Section
@@ -962,7 +1057,7 @@ export default function OperationsPage() {
                   booking={b}
                   action="check_in"
                   actionLoading={false}
-                  onAction={handleCheckIn}
+                  onAction={canEdit ? handleCheckIn : undefined}
                 />
               ))}
             </Section>
@@ -980,7 +1075,7 @@ export default function OperationsPage() {
                   booking={b}
                   action="check_out"
                   actionLoading={false}
-                  onAction={handleCheckOut}
+                  onAction={canEdit ? handleCheckOut : undefined}
                 />
               ))}
             </Section>
@@ -1018,7 +1113,8 @@ export default function OperationsPage() {
             onToggle={toggleCare}
             dateRelation={dateRelation}
             selectedDate={selectedDate}
-            onAddJournal={journalEnabled ? setJournalFor : undefined}
+            canEdit={canEdit}
+            onAddJournal={journalEnabled && canEdit ? setJournalFor : undefined}
           />
         </Section>
       )}
@@ -1070,6 +1166,53 @@ export default function OperationsPage() {
             >
               {treatmentIssues.map(({ booking, pet, issues }) => (
                 <TreatmentIssueRow key={`${booking.id}-${pet.id}`} booking={booking} pet={pet} issues={issues} />
+              ))}
+            </Section>
+          )}
+        </div>
+      )}
+
+      {/* ── Balances tab ──────────────────────────────────────────────── */}
+      {tab === 'balances' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 flex items-center justify-between">
+            <span className="text-sm text-slate-500">Total outstanding across {owed.length} booking{owed.length !== 1 ? 's' : ''}</span>
+            <span className={`text-xl font-bold ${owedTotal > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
+              {fmtMoney(owedTotal, settings?.currency ?? 'GBP')}
+            </span>
+          </div>
+
+          {owed.length === 0 ? (
+            <div className="rounded-xl border border-slate-200 bg-white px-4 py-10 text-center">
+              <p className="text-sm text-slate-400 italic">Nothing outstanding — all balances are settled</p>
+            </div>
+          ) : (
+            <Section title="Money owed" icon={Wallet} iconCls="text-amber-500" count={owed.length} emptyText="">
+              {owed.map(b => (
+                <Link
+                  key={b.id}
+                  to={`/bookings/${b.id}`}
+                  className="flex items-center gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0 hover:bg-slate-50/60 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-slate-900">
+                        {b.owner ? `${b.owner.first_name} ${b.owner.last_name}` : '—'}
+                      </span>
+                      <PaymentBadge status={paymentStatusOf(b)} />
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {new Date(b.start_date + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                      {' – '}
+                      {new Date(b.end_date + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                    </p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="text-sm font-bold text-amber-600">{fmtMoney(outstandingOf(b), settings?.currency ?? 'GBP')}</p>
+                    <p className="text-xs text-slate-400">of {fmtMoney(b.total_amount ?? 0, settings?.currency ?? 'GBP')}</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-300 flex-shrink-0" />
+                </Link>
               ))}
             </Section>
           )}

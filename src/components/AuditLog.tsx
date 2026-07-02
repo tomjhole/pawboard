@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Clock } from 'lucide-react'
+import { fmtMoney } from '@/lib/reports'
 
 type AuditEntry = {
   id:          string
@@ -27,6 +28,12 @@ const ACTION_LABELS: Record<string, string> = {
   'vaccination.verified':     'Vaccination verified',
   'space.created':            'Space created',
   'space.updated':            'Space updated',
+  'charge.added':             'Charge added',
+  'charge.removed':           'Charge removed',
+  'payment.recorded':         'Payment recorded',
+  'payment.deleted':          'Payment removed',
+  'invoice.sent':             'Invoice emailed',
+  'booking.reopened':         'Reopened for editing',
 }
 
 function relativeTime(iso: string): string {
@@ -84,6 +91,27 @@ function EntryDetail({ entry }: { entry: AuditEntry }) {
   if (action === 'space.created' || action === 'space.updated') {
     const name = after?.name as string | undefined
     if (name) return <span className="text-slate-500">{name}</span>
+  }
+
+  if (action === 'charge.added' || action === 'charge.removed') {
+    const desc  = meta?.description as string | undefined
+    const price = meta?.total_price as number | undefined
+    if (desc != null) return <span className="text-slate-500">{desc}{price != null ? ` · ${fmtMoney(Number(price), 'GBP')}` : ''}</span>
+  }
+
+  if (action === 'payment.recorded' || action === 'payment.deleted') {
+    const amount = meta?.amount as number | undefined
+    const kind   = meta?.kind as string | undefined
+    const method = meta?.method as string | undefined
+    if (amount != null) {
+      const parts = [kind && kind !== 'other' ? fmtStatus(kind) : null, method ? fmtStatus(method) : null].filter(Boolean)
+      return <span className="text-slate-500">{fmtMoney(Number(amount), 'GBP')}{parts.length ? ` · ${parts.join(' · ')}` : ''}</span>
+    }
+  }
+
+  if (action === 'booking.reopened') {
+    const area = meta?.area as string | undefined
+    return <span className="text-slate-500">{area === 'payments' ? 'Payments reopened' : 'Charges reopened'}</span>
   }
 
   return null

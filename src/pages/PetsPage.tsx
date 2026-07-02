@@ -6,6 +6,7 @@ import { useBusinessContext } from '@/context/BusinessContext'
 import { PageHeader, Card, Button, Input, Select, Textarea, Modal, EmptyState } from '@/components/ui'
 import type { Database } from '@/types/database'
 import { logAudit } from '@/lib/audit'
+import { canEdit as canEditRole } from '@/lib/roles'
 
 function toTitleCase(str: string): string {
   return str.replace(/\b\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
@@ -680,7 +681,8 @@ export function buildPetPayload(form: PetForm) {
 }
 
 export default function PetsPage() {
-  const { business } = useBusinessContext()
+  const { business, staffUser, isAdmin } = useBusinessContext()
+  const canEdit = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
 
   const [pets,          setPets]         = useState<PetWithRelations[]>([])
   const [owners,        setOwners]       = useState<Pick<Owner, 'id' | 'first_name' | 'last_name'>[]>([])
@@ -784,9 +786,11 @@ export default function PetsPage() {
         title="Pets"
         description="Pet profiles and care records"
         action={
-          <Button icon={<Plus className="w-4 h-4" />} onClick={() => setModalOpen(true)}>
-            Add pet
-          </Button>
+          canEdit ? (
+            <Button icon={<Plus className="w-4 h-4" />} onClick={() => setModalOpen(true)}>
+              Add pet
+            </Button>
+          ) : undefined
         }
       />
 
@@ -841,9 +845,11 @@ export default function PetsPage() {
             title="No pets yet"
             description="Pets are linked to owners. Add a pet and assign them to an existing owner."
             action={
-              <Button variant="secondary" icon={<Plus className="w-4 h-4" />} onClick={() => setModalOpen(true)}>
-                Add pet
-              </Button>
+              canEdit ? (
+                <Button variant="secondary" icon={<Plus className="w-4 h-4" />} onClick={() => setModalOpen(true)}>
+                  Add pet
+                </Button>
+              ) : undefined
             }
           />
         ) : filtered.length === 0 ? (

@@ -5,18 +5,22 @@ import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import {
   PageHeader, Card, Button, Modal, Input, Textarea, EmptyState,
-  StatusBadge, type BookingStatus,
+  StatusBadge, PaymentBadge, type BookingStatus,
 } from '@/components/ui'
 import type { Database } from '@/types/database'
 import { logAudit } from '@/lib/audit'
+import { todayIso, addDays } from '@/lib/reports'
+import { paymentStatusOf } from '@/lib/payments'
+import { canEdit as canEditRole } from '@/lib/roles'
 
 // ─── Types & constants ────────────────────────────────────────────────────────
 
 export type DbBookingStatus = Database['public']['Enums']['booking_status']
+export type DisplayBookingStatus = DbBookingStatus | 'overdue'
 type Owner   = Database['public']['Tables']['owners']['Row']
 type Species = Database['public']['Tables']['species']['Row']
 
-export const STATUS_LABELS: Record<DbBookingStatus, string> = {
+export const STATUS_LABELS: Record<DisplayBookingStatus, string> = {
   enquiry:             'Enquiry',
   confirmed:           'Confirmed',
   details_outstanding: 'Details outstanding',
@@ -26,6 +30,7 @@ export const STATUS_LABELS: Record<DbBookingStatus, string> = {
   checked_out:         'Checked out',
   cancelled:           'Cancelled',
   waiting_list:        'Waiting list',
+  overdue:             'Overdue checkout',
 }
 
 export const SELECTABLE_STATUSES: { value: DbBookingStatus; label: string }[] = [
@@ -46,13 +51,23 @@ export const INTENT_STATUSES: { value: DbBookingStatus; label: string }[] = [
 
 export const INTENT_STATUS_SET = new Set<DbBookingStatus>(['enquiry', 'confirmed', 'waiting_list'])
 
+// Statuses whose space assignments actually hold a space for the booking's dates.
+// Anything here occupies its kennel/cabin; enquiry/waiting_list have no assignment,
+// cancelled is void, and checked_out has left (space freed).
+export const OCCUPYING_STATUSES = ['confirmed', 'details_outstanding', 'ready', 'checked_in', 'due_out'] as const
+
+// Per-space occupancy for a date range: how many pets, and which households (owners).
+export type SpaceOccupancy = { count: number; ownerIds: Set<string> }
+
 // Returns the status to display — overrides to details_outstanding when a pre-event
 // booking has genuinely missing info, so the badge reflects the real state.
 export function computeDisplayStatus(
   stored: DbBookingStatus,
   hasOutstanding: boolean,
-): DbBookingStatus {
+  endDate?: string | null,
+): DisplayBookingStatus {
   if (hasOutstanding && INTENT_STATUS_SET.has(stored)) { return 'details_outstanding' }
+  if (endDate && (stored === 'checked_in' || stored === 'due_out') && endDate < todayIso()) { return 'overdue' }
   return stored
 }
 
@@ -82,7 +97,7 @@ export function petHasCriticalIssues(pet: {
   return false
 }
 
-export function dbStatusToUi(s: DbBookingStatus): BookingStatus {
+export function dbStatusToUi(s: DisplayBookingStatus): BookingStatus {
   return s.replace(/_/g, '-') as BookingStatus
 }
 
@@ -146,7 +161,8 @@ function validateSpaces(
   assignments: Record<string, string>,
   pets: PetForAssignment[],
   spaces: SpaceWithSpecies[],
-  existingOccupancy: Map<string, number>,
+  existingOccupancy: Map<string, SpaceOccupancy>,
+  currentOwnerId: string,
 ): SpaceIssue[] {
   const issues: SpaceIssue[] = []
 
@@ -187,8 +203,18 @@ function validateSpaces(
       }
     }
 
+    const occ = existingOccupancy.get(spaceId)
+    const existingCount = occ?.count ?? 0
+
+    // Same-household-only — hard block if another household already holds it
+    if (space.same_household_only && [...(occ?.ownerIds ?? [])].some(o => o !== currentOwnerId)) {
+      issues.push({
+        message: `${space.name} is already booked by another household for these dates — it only takes one household at a time.`,
+        blocking: true,
+      })
+    }
+
     // Capacity — includes pets already assigned by other bookings for these dates
-    const existingCount = existingOccupancy.get(spaceId) ?? 0
     const totalCount = existingCount + assigned.length
     if (totalCount > space.max_pets) {
       if (existingCount >= space.max_pets) {
@@ -214,27 +240,40 @@ export interface NewBookingModalProps {
   open: boolean
   onClose: () => void
   onCreated: (bookingId: string) => void
+  /** Prefill when opened from a calendar cell. */
+  initialSpaceId?: string
+  initialStartDate?: string
+  /** Latest allowed departure (day before the next booking in that space). */
+  maxEndDate?: string
 }
 
-export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalProps) {
+export function NewBookingModal({ open, onClose, onCreated, initialSpaceId, initialStartDate, maxEndDate }: NewBookingModalProps) {
   const { business } = useBusinessContext()
 
   const [form,        setForm]        = useState<BookingForm>(EMPTY_FORM)
   const [ownerSearch, setOwnerSearch] = useState('')
   const [owners,      setOwners]      = useState<OwnerOption[]>([])
+  const [petIndex,    setPetIndex]    = useState<Map<string, string[]>>(new Map())  // ownerId → pet names
   const [ownerPets,   setOwnerPets]   = useState<OwnerPetOpt[]>([])
   const [allSpecies,  setAllSpecies]  = useState<Species[]>([])
   const [spaces,      setSpaces]      = useState<SpaceWithSpecies[]>([])
   const [saving,        setSaving]        = useState(false)
   const [errors,        setErrors]        = useState<Record<string, string>>({})
   const [petsLoading,   setPetsLoading]   = useState(false)
-  const [occupancyMap,  setOccupancyMap]  = useState<Map<string, number>>(new Map())
+  const [occupancyMap,  setOccupancyMap]  = useState<Map<string, SpaceOccupancy>>(new Map())
   const [newOwnerForm,  setNewOwnerForm]  = useState<{ firstName: string; lastName: string; phone: string } | null>(null)
 
   // Load reference data when modal opens
   useEffect(() => {
     if (!open) return
-    setForm(EMPTY_FORM)
+    setForm({
+      ...EMPTY_FORM,
+      startDate: initialStartDate ?? '',
+      // Default to a 1-night stay when opened from a calendar cell, capped to availability.
+      endDate: initialStartDate
+        ? (maxEndDate && addDays(initialStartDate, 1) > maxEndDate ? maxEndDate : addDays(initialStartDate, 1))
+        : '',
+    })
     setOwnerSearch('')
     setOwnerPets([])
     setErrors({})
@@ -243,10 +282,18 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
       supabase.from('owners').select('id, first_name, last_name').eq('is_active', true).order('last_name').order('first_name'),
       supabase.from('species').select('*').order('is_system_default', { ascending: false }).order('sort_order').order('name'),
       supabase.from('accommodation_spaces').select(SPACES_QUERY).eq('is_active', true).order('sort_order'),
-    ]).then(([ownersRes, speciesRes, spacesRes]) => {
+      supabase.from('pets').select('name, owner_id').eq('is_active', true),
+    ]).then(([ownersRes, speciesRes, spacesRes, petsRes]) => {
       setOwners(ownersRes.data ?? [])
       setAllSpecies(speciesRes.data ?? [])
       setSpaces((spacesRes.data ?? []) as unknown as SpaceWithSpecies[])
+      const idx = new Map<string, string[]>()
+      for (const p of (petsRes.data ?? []) as { name: string; owner_id: string }[]) {
+        const list = idx.get(p.owner_id) ?? []
+        list.push(p.name)
+        idx.set(p.owner_id, list)
+      }
+      setPetIndex(idx)
     })
   }, [open])
 
@@ -274,16 +321,21 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
     }
     supabase
       .from('bookings')
-      .select('booking_pets(booking_space_assignments(space_id))')
-      .in('status', ['confirmed', 'checked_in', 'due_out'])
-      .lte('start_date', form.endDate)
-      .gte('end_date', form.startDate)
+      .select('owner_id, booking_pets(booking_space_assignments(space_id))')
+      .in('status', OCCUPYING_STATUSES)
+      // Strict overlap: a booking ending on day X does not clash with one starting on X
+      // (checkout frees the space that morning). end_date is the checkout day, not a night.
+      .lt('start_date', form.endDate)
+      .gt('end_date', form.startDate)
       .then(({ data }) => {
-        const map = new Map<string, number>()
+        const map = new Map<string, SpaceOccupancy>()
         for (const b of data ?? []) {
           for (const bp of (b as any).booking_pets ?? []) {
             for (const sa of bp.booking_space_assignments ?? []) {
-              map.set(sa.space_id, (map.get(sa.space_id) ?? 0) + 1)
+              const occ = map.get(sa.space_id) ?? { count: 0, ownerIds: new Set<string>() }
+              occ.count += 1
+              if ((b as any).owner_id) occ.ownerIds.add((b as any).owner_id)
+              map.set(sa.space_id, occ)
             }
           }
         }
@@ -316,17 +368,27 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
   }, [form.selectedPetIds, form.newPets, ownerPets, allSpecies])
 
   const spaceIssues = useMemo(
-    () => validateSpaces(form.spaceAssignments, petsForAssignment, spaces, occupancyMap),
-    [form.spaceAssignments, petsForAssignment, spaces, occupancyMap]
+    () => validateSpaces(form.spaceAssignments, petsForAssignment, spaces, occupancyMap, form.ownerId),
+    [form.spaceAssignments, petsForAssignment, spaces, occupancyMap, form.ownerId]
   )
 
-  const filteredOwners = useMemo(
-    () => ownerSearch
-      ? owners.filter(o =>
-          `${o.first_name} ${o.last_name}`.toLowerCase().includes(ownerSearch.toLowerCase())
-        ).slice(0, 10)
-      : [],
-    [owners, ownerSearch]
+  const filteredOwners = useMemo<{ owner: OwnerOption; viaPet?: string }[]>(
+    () => {
+      const q = ownerSearch.trim().toLowerCase()
+      if (!q) return []
+      const out: { owner: OwnerOption; viaPet?: string }[] = []
+      for (const o of owners) {
+        if (`${o.first_name} ${o.last_name}`.toLowerCase().includes(q)) {
+          out.push({ owner: o })
+        } else {
+          const pet = (petIndex.get(o.id) ?? []).find(n => n.toLowerCase().includes(q))
+          if (pet) out.push({ owner: o, viaPet: pet })
+        }
+        if (out.length >= 10) break
+      }
+      return out
+    },
+    [owners, petIndex, ownerSearch]
   )
 
   const spacesByArea = useMemo(() => {
@@ -351,6 +413,35 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
     clearError(k as string)
   }
 
+  // Arrival changes preserve the number of nights (shift departure); a departure
+  // now earlier than the new arrival is cleared.
+  function setStartDate(v: string) {
+    setForm(f => {
+      const n = f.startDate && f.endDate && f.endDate >= f.startDate ? nightsBetween(f.startDate, f.endDate) : null
+      let end = f.endDate
+      if (v && n && n > 0) {
+        end = addDays(v, n)
+        if (maxEndDate && end > maxEndDate) end = maxEndDate
+      } else if (v && f.endDate && f.endDate < v) {
+        end = ''
+      }
+      return { ...f, startDate: v, endDate: end }
+    })
+    clearError('startDate'); clearError('endDate')
+  }
+
+  // Nights and departure calculate each other (arrival is the anchor).
+  function setNights(nStr: string) {
+    const n = parseInt(nStr, 10)
+    if (!form.startDate || isNaN(n) || n < 1) return
+    let end = addDays(form.startDate, n)
+    if (maxEndDate && end > maxEndDate) end = maxEndDate
+    setField('endDate', end)
+  }
+
+  const nights = form.startDate && form.endDate && form.endDate >= form.startDate
+    ? nightsBetween(form.startDate, form.endDate) : null
+
   function selectOwner(o: OwnerOption) {
     setForm(f => ({ ...f, ownerId: o.id, selectedPetIds: new Set(), newPets: [], spaceAssignments: {} }))
     setOwnerSearch('')
@@ -367,16 +458,19 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
         return { ...f, selectedPetIds: next, spaceAssignments: sa }
       }
       next.add(petId)
-      return { ...f, selectedPetIds: next }
+      // When opened from a calendar cell, default the pet into that space.
+      const sa = initialSpaceId ? { ...f.spaceAssignments, [petId]: initialSpaceId } : f.spaceAssignments
+      return { ...f, selectedPetIds: next, spaceAssignments: sa }
     })
     clearError('pets')
   }
 
   function addNewPet() {
-    setForm(f => ({
-      ...f,
-      newPets: [...f.newPets, { _key: crypto.randomUUID(), name: '', speciesId: '' }],
-    }))
+    setForm(f => {
+      const key = crypto.randomUUID()
+      const sa = initialSpaceId ? { ...f.spaceAssignments, [key]: initialSpaceId } : f.spaceAssignments
+      return { ...f, newPets: [...f.newPets, { _key: key, name: '', speciesId: '' }], spaceAssignments: sa }
+    })
   }
 
   function updateNewPet(key: string, field: 'name' | 'speciesId', value: string) {
@@ -396,6 +490,42 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
 
   function setSpaceForPet(petKey: string, spaceId: string) {
     setForm(f => ({ ...f, spaceAssignments: { ...f.spaceAssignments, [petKey]: spaceId } }))
+  }
+
+  // Fill in any unassigned pets with the first compatible space that still has
+  // room, packing pets into shared spaces (e.g. siblings into one cabin) before
+  // moving on. Existing manual assignments are left untouched.
+  function autoAssignSpaces() {
+    // Running count + households per space, seeded from other bookings then this draft.
+    const counts = new Map<string, number>()
+    const owners = new Map<string, Set<string>>()
+    for (const [sid, occ] of occupancyMap) {
+      counts.set(sid, occ.count)
+      owners.set(sid, new Set(occ.ownerIds))
+    }
+    for (const spaceId of Object.values(form.spaceAssignments)) {
+      if (spaceId) {
+        counts.set(spaceId, (counts.get(spaceId) ?? 0) + 1)
+        if (form.ownerId) (owners.get(spaceId) ?? owners.set(spaceId, new Set()).get(spaceId)!).add(form.ownerId)
+      }
+    }
+    const next = { ...form.spaceAssignments }
+    for (const pet of petsForAssignment) {
+      if (next[pet.key]) continue
+      const target = spaces.find(s => {
+        const speciesOk = !pet.speciesId || s.accommodation_space_species.some(ss => ss.species_id === pet.speciesId)
+        const hasRoom   = (counts.get(s.id) ?? 0) < s.max_pets
+        const householdOk = !s.same_household_only ||
+          ![...(owners.get(s.id) ?? [])].some(o => o !== form.ownerId)
+        return speciesOk && hasRoom && householdOk
+      })
+      if (target) {
+        next[pet.key] = target.id
+        counts.set(target.id, (counts.get(target.id) ?? 0) + 1)
+        if (form.ownerId) (owners.get(target.id) ?? owners.set(target.id, new Set()).get(target.id)!).add(form.ownerId)
+      }
+    }
+    setForm(f => ({ ...f, spaceAssignments: next }))
   }
 
   function startNewOwner() {
@@ -468,9 +598,9 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
         const { data: conflicting } = await supabase
           .from('bookings')
           .select('booking_pets(booking_space_assignments(space_id))')
-          .in('status', ['confirmed', 'checked_in', 'due_out'])
-          .lte('start_date', form.endDate)
-          .gte('end_date', form.startDate)
+          .in('status', OCCUPYING_STATUSES)
+          .lt('start_date', form.endDate)
+          .gt('end_date', form.startDate)
 
         const existingCounts = new Map<string, number>()
         for (const b of conflicting ?? []) {
@@ -693,7 +823,7 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
               />
               {(filteredOwners.length > 0 || ownerSearch.trim().length > 0) && (
                 <ul className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-52 overflow-y-auto divide-y divide-slate-100">
-                  {filteredOwners.map(o => (
+                  {filteredOwners.map(({ owner: o, viaPet }) => (
                     <li key={o.id}>
                       <button
                         type="button"
@@ -701,6 +831,7 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                         className="w-full text-left px-3.5 py-2.5 text-sm text-slate-900 hover:bg-slate-50 transition-colors"
                       >
                         {o.first_name} {o.last_name}
+                        {viaPet && <span className="text-slate-400"> · {viaPet}</span>}
                       </button>
                     </li>
                   ))}
@@ -724,13 +855,13 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
         </div>
 
         {/* Dates */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_5rem] gap-4">
           <Input
             id="nb-start"
             label="Arrival date"
             type="date"
             value={form.startDate}
-            onChange={e => setField('startDate', e.target.value)}
+            onChange={e => setStartDate(e.target.value)}
             required
             error={errors.startDate}
           />
@@ -740,11 +871,26 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
             type="date"
             value={form.endDate}
             min={form.startDate || undefined}
+            max={maxEndDate || undefined}
             onChange={e => setField('endDate', e.target.value)}
             required
             error={errors.endDate}
           />
+          <Input
+            id="nb-nights"
+            label="Nights"
+            type="number"
+            min="1"
+            value={nights ?? ''}
+            onChange={e => setNights(e.target.value)}
+            disabled={!form.startDate}
+          />
         </div>
+        {maxEndDate && (
+          <p className="-mt-3 text-xs text-slate-400">
+            {form.startDate} is free in this space until {formatBookingDate(maxEndDate)} — the next booking starts after that.
+          </p>
+        )}
 
         {/* Pets */}
         <div className="space-y-2">
@@ -852,25 +998,50 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
         {/* Space assignment — per pet */}
         {hasPets && spaces.length > 0 && (
           <div className="space-y-2">
-            <p className="text-sm font-medium text-slate-700">Space assignment (optional)</p>
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-slate-700">Space assignment (optional)</p>
+              <button
+                type="button"
+                onClick={autoAssignSpaces}
+                className="text-xs font-medium text-emerald-700 hover:text-emerald-800 transition-colors"
+              >
+                Auto-assign
+              </button>
+            </div>
             <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
-              {petsForAssignment.map(pet => {
+              {(() => {
+                // Other pets already assigned in this draft occupy their space too —
+                // count them alongside existing DB occupancy so one dropdown can't
+                // offer a space another pet in the same booking has just taken.
+                const draftCounts = new Map<string, number>()
+                for (const spaceId of Object.values(form.spaceAssignments)) {
+                  if (spaceId) draftCounts.set(spaceId, (draftCounts.get(spaceId) ?? 0) + 1)
+                }
+                return petsForAssignment.map(pet => {
                 const speciesMatch = (s: SpaceWithSpecies) =>
                   !pet.speciesId ||
                   s.accommodation_space_species.some(ss => ss.species_id === pet.speciesId)
 
-                const compatibleSpaces   = spaces.filter(s =>  speciesMatch(s))
-                const incompatibleSpaces = spaces.filter(s => !speciesMatch(s))
+                const compatibleSpaces = spaces.filter(s => speciesMatch(s))
+                const currentSpaceId = form.spaceAssignments[pet.key] ?? ''
+
+                // Effective occupancy = DB occupancy + other pets in this draft,
+                // minus 1 if this pet itself already holds that space.
+                const effectiveCount = (s: SpaceWithSpecies) => {
+                  const total = (occupancyMap.get(s.id)?.count ?? 0) + (draftCounts.get(s.id) ?? 0)
+                  return currentSpaceId === s.id ? total - 1 : total
+                }
+                // A same-household-only space is blocked if another household holds it.
+                const householdBlocked = (s: SpaceWithSpecies) =>
+                  s.same_household_only &&
+                  [...(occupancyMap.get(s.id)?.ownerIds ?? [])].some(o => o !== form.ownerId)
+
+                const isAvailable = (s: SpaceWithSpecies) =>
+                  s.id === currentSpaceId || (effectiveCount(s) < s.max_pets && !householdBlocked(s))
 
                 // Split compatible spaces into available vs. fully booked for these dates
-                const availableSpaces = compatibleSpaces.filter(s =>
-                  (occupancyMap.get(s.id) ?? 0) < s.max_pets
-                )
-                const fullyBookedSpaces = compatibleSpaces.filter(s =>
-                  (occupancyMap.get(s.id) ?? 0) >= s.max_pets
-                )
-
-                const currentSpaceId = form.spaceAssignments[pet.key] ?? ''
+                const availableSpaces = compatibleSpaces.filter(s => isAvailable(s))
+                const fullyBookedSpaces = compatibleSpaces.filter(s => !isAvailable(s))
                 const hasConflict = spaceIssues.some(
                   i => i.message.includes(pet.name) || i.message.includes(
                     spaces.find(s => s.id === currentSpaceId)?.name ?? '<<<'
@@ -898,7 +1069,7 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                         {availableSpaces.length > 0 && spacesByArea
                           .map(group => {
                             const groupSpaces = group.spaces.filter(s =>
-                              speciesMatch(s) && (occupancyMap.get(s.id) ?? 0) < s.max_pets
+                              speciesMatch(s) && isAvailable(s)
                             )
                             if (groupSpaces.length === 0) return null
                             return (
@@ -917,13 +1088,6 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                             ))}
                           </optgroup>
                         )}
-                        {incompatibleSpaces.length > 0 && (
-                          <optgroup label="⚠ Incompatible species">
-                            {incompatibleSpaces.map(s => (
-                              <option key={s.id} value={s.id} disabled>{s.name}</option>
-                            ))}
-                          </optgroup>
-                        )}
                       </select>
                       <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
                         <svg className="w-4 h-4 text-slate-400" viewBox="0 0 20 20" fill="currentColor">
@@ -933,7 +1097,8 @@ export function NewBookingModal({ open, onClose, onCreated }: NewBookingModalPro
                     </div>
                   </div>
                 )
-              })}
+                })
+              })()}
             </div>
 
             {/* Validation messages */}
@@ -978,6 +1143,7 @@ type BookingListRow = {
   start_date: string
   end_date: string
   total_amount: number | null
+  amount_paid: number
   deposit_paid: boolean
   balance_paid: boolean
   owner: {
@@ -1004,22 +1170,13 @@ type BookingListRow = {
 
 function PaymentChip({ booking }: { booking: BookingListRow }) {
   if (booking.total_amount == null || booking.status === 'cancelled') return null
-  const cfg = booking.balance_paid
-    ? { label: 'Paid',         cls: 'bg-emerald-50 text-emerald-700' }
-    : booking.deposit_paid
-    ? { label: 'Deposit paid', cls: 'bg-amber-50 text-amber-700' }
-    : { label: 'Unpaid',       cls: 'bg-slate-100 text-slate-500' }
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${cfg.cls}`}>
-      {cfg.label}
-    </span>
-  )
+  return <PaymentBadge status={paymentStatusOf(booking)} />
 }
 
 function BookingRow({ booking }: { booking: BookingListRow }) {
   const pets = booking.booking_pets.map(bp => bp.pet).filter(Boolean) as NonNullable<BookingListRow['booking_pets'][number]['pet']>[]
   const nights = nightsBetween(booking.start_date, booking.end_date)
-  const displayStatus = computeDisplayStatus(booking.status, hasOutstandingDetails(booking))
+  const displayStatus = computeDisplayStatus(booking.status, hasOutstandingDetails(booking), booking.end_date)
 
   return (
     <li>
@@ -1063,6 +1220,8 @@ const PAST_STATUSES = new Set<DbBookingStatus>(['checked_out', 'cancelled'])
 
 export default function BookingsPage() {
   const navigate = useNavigate()
+  const { staffUser, isAdmin } = useBusinessContext()
+  const canEdit = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
   const [bookings,     setBookings]     = useState<BookingListRow[]>([])
   const [loading,      setLoading]      = useState(true)
   const [newOpen,      setNewOpen]      = useState(false)
@@ -1075,7 +1234,7 @@ export default function BookingsPage() {
     const { data } = await supabase
       .from('bookings')
       .select(`
-        id, status, start_date, end_date, total_amount, deposit_paid, balance_paid,
+        id, status, start_date, end_date, total_amount, amount_paid, deposit_paid, balance_paid,
         owner:owner_id ( id, first_name, last_name, email, address_line1, city, emergency_contact_name, emergency_contact_phone ),
         booking_pets ( pet:pet_id ( id, name, vet_practice_name, vet_phone, microchip_number,
           species:species_id ( name, icon ) ) )
@@ -1116,9 +1275,11 @@ export default function BookingsPage() {
       <PageHeader
         title="Bookings"
         action={
-          <Button icon={<Plus className="w-4 h-4" />} onClick={() => setNewOpen(true)}>
-            New booking
-          </Button>
+          canEdit ? (
+            <Button icon={<Plus className="w-4 h-4" />} onClick={() => setNewOpen(true)}>
+              New booking
+            </Button>
+          ) : undefined
         }
       />
 

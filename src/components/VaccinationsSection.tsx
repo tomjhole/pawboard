@@ -3,6 +3,7 @@ import { Plus, CheckCircle, AlertCircle, XCircle, Clock, Pencil } from 'lucide-r
 import { supabase } from '@/lib/supabase'
 import { logAudit } from '@/lib/audit'
 import { useBusinessContext } from '@/context/BusinessContext'
+import { canEdit as canEditRole } from '@/lib/roles'
 import { Button, Modal, Input, Textarea } from '@/components/ui'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -327,7 +328,7 @@ function VaccinationModal({
 function VaccinationCard({ vax, stayEndDate, onEdit }: {
   vax:          Vaccination
   stayEndDate?: string
-  onEdit:       () => void
+  onEdit?:      () => void
 }) {
   const status = getVaxStatus(vax, stayEndDate)
   const days   = vax.expiry_date ? daysUntil(vax.expiry_date) : null
@@ -365,11 +366,13 @@ function VaccinationCard({ vax, stayEndDate, onEdit }: {
           )}
         </div>
       </div>
-      <button onClick={onEdit}
-        className="p-1 text-slate-300 group-hover:text-slate-500 transition-colors flex-shrink-0 rounded mt-0.5"
-        title="Edit">
-        <Pencil className="w-3.5 h-3.5" />
-      </button>
+      {onEdit && (
+        <button onClick={onEdit}
+          className="p-1 text-slate-300 group-hover:text-slate-500 transition-colors flex-shrink-0 rounded mt-0.5"
+          title="Edit">
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      )}
     </div>
   )
 }
@@ -382,7 +385,8 @@ export function VaccinationsSection({ petId, petSpeciesId, stayEndDate, onIssueC
   stayEndDate?:   string
   onIssueCount?:  (n: number) => void
 }) {
-  const { business } = useBusinessContext()
+  const { business, staffUser, isAdmin } = useBusinessContext()
+  const canEdit = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
 
   const [vaxList,   setVaxList]   = useState<Vaccination[]>([])
   const [vaccTypes, setVaccTypes] = useState<VaccType[]>([])
@@ -449,9 +453,11 @@ export function VaccinationsSection({ petId, petSpeciesId, stayEndDate, onIssueC
               {issueCount} issue{issueCount !== 1 ? 's' : ''}
             </span>
           )}
-          <Button variant="secondary" size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => openAdd()}>
-            Add
-          </Button>
+          {canEdit && (
+            <Button variant="secondary" size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => openAdd()}>
+              Add
+            </Button>
+          )}
         </div>
 
         {/* Missing critical */}
@@ -460,7 +466,7 @@ export function VaccinationsSection({ petId, petSpeciesId, stayEndDate, onIssueC
             <p className="text-xs font-semibold text-rose-700 mb-2">Missing critical vaccinations</p>
             <div className="flex flex-wrap gap-2">
               {missingCritical.map(t => (
-                <button key={t.id} onClick={() => openAdd(t.name)}
+                <button key={t.id} disabled={!canEdit} onClick={() => openAdd(t.name)}
                   className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border border-rose-300 bg-white text-rose-700 hover:bg-rose-50 transition-colors">
                   <Plus className="w-3 h-3" />{t.name}
                 </button>
@@ -475,7 +481,7 @@ export function VaccinationsSection({ petId, petSpeciesId, stayEndDate, onIssueC
             <p className="text-xs font-semibold text-amber-700 mb-2">Recommended vaccinations not recorded</p>
             <div className="flex flex-wrap gap-2">
               {missingOptional.map(t => (
-                <button key={t.id} onClick={() => openAdd(t.name)}
+                <button key={t.id} disabled={!canEdit} onClick={() => openAdd(t.name)}
                   className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border border-amber-300 bg-white text-amber-700 hover:bg-amber-50 transition-colors">
                   <Plus className="w-3 h-3" />{t.name}
                 </button>
@@ -490,7 +496,7 @@ export function VaccinationsSection({ petId, petSpeciesId, stayEndDate, onIssueC
           <p className="px-4 py-5 text-sm text-slate-400 italic text-center">No vaccination records yet</p>
         ) : (
           vaxList.map(v => (
-            <VaccinationCard key={v.id} vax={v} stayEndDate={stayEndDate} onEdit={() => openEdit(v)} />
+            <VaccinationCard key={v.id} vax={v} stayEndDate={stayEndDate} onEdit={canEdit ? () => openEdit(v) : undefined} />
           ))
         )}
       </div>

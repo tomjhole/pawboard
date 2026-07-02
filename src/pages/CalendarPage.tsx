@@ -3,15 +3,16 @@ import { useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, ChevronRight, Filter, X, Lock,
   HelpCircle, CheckCircle, AlertTriangle, ArrowRight,
-  Home, Bell, CheckCheck, XCircle, Users, AlertCircle,
+  Home, Bell, CheckCheck, XCircle, Users, AlertCircle, AlertOctagon,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { Button, PageHeader } from '@/components/ui'
 import { usePlan } from '@/lib/plans'
+import { canEdit as canEditRole } from '@/lib/roles'
 import { NewBookingModal, STATUS_LABELS, computeDisplayStatus } from '@/pages/BookingsPage'
-import type { DbBookingStatus } from '@/pages/BookingsPage'
+import type { DbBookingStatus, DisplayBookingStatus } from '@/pages/BookingsPage'
 
 // ---------- types ----------
 
@@ -36,7 +37,7 @@ type CalendarAssignment = {
   endDate: string
   bookingId: string
   status: DbBookingStatus
-  displayStatus: DbBookingStatus
+  displayStatus: DisplayBookingStatus
   ownerName: string
   petName: string
   speciesColour: string | null
@@ -101,9 +102,9 @@ type StatusStyle = {
 }
 
 // Statuses that occupy a space and count toward capacity
-const CAPACITY_STATUSES = new Set<DbBookingStatus>(['confirmed', 'checked_in', 'due_out'])
+const CAPACITY_STATUSES = new Set<DbBookingStatus>(['confirmed', 'details_outstanding', 'ready', 'checked_in', 'due_out'])
 
-const STATUS_STYLES: Record<DbBookingStatus, StatusStyle> = {
+const STATUS_STYLES: Record<DisplayBookingStatus, StatusStyle> = {
   enquiry: {
     stripe: 'bg-slate-400', bg: 'bg-slate-50', text: 'text-slate-600', border: 'border-slate-300', Icon: HelpCircle,
   },
@@ -130,6 +131,9 @@ const STATUS_STYLES: Record<DbBookingStatus, StatusStyle> = {
   },
   waiting_list: {
     stripe: 'bg-teal-500', bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200', Icon: Users,
+  },
+  overdue: {
+    stripe: 'bg-red-600', bg: 'bg-red-100', text: 'text-red-900', border: 'border-red-500', Icon: AlertOctagon,
   },
 }
 
@@ -568,6 +572,7 @@ interface SpaceRowProps {
   assignments: CalendarAssignment[]
   todayStr:    string
   onNavigate:  (bookingId: string) => void
+  onEmptyClick?: (date: string, maxEndDate: string | null) => void
   variant?:    SpaceRowVariant
 }
 
@@ -577,12 +582,12 @@ const VARIANT_LEFT_CELL: Record<SpaceRowVariant, string> = {
   waitinglist: 'bg-teal-50 border-teal-100 text-teal-700 italic',
 }
 
-function SpaceRow({ space, days, assignments, todayStr, onNavigate, variant = 'normal' }: SpaceRowProps) {
+function SpaceRow({ space, days, assignments, todayStr, onNavigate, onEmptyClick, variant = 'normal' }: SpaceRowProps) {
   const gridCols = `${SPACE_COL_W}px repeat(${days.length}, 1fr)`
 
   const { blocks, rowHeight } = useMemo(() => {
     type RawBlock = {
-      id: string; bookingId: string; displayStatus: DbBookingStatus
+      id: string; bookingId: string; displayStatus: DisplayBookingStatus
       ownerName: string; petName: string; speciesColour: string | null
       hasVaccination: boolean
       visStart: number; visEnd: number; clipsLeft: boolean; clipsRight: boolean
@@ -591,9 +596,13 @@ function SpaceRow({ space, days, assignments, todayStr, onNavigate, variant = 'n
 
     const rawBlocks: RawBlock[] = assignments
       .map(a => {
+        // Bars run from the MIDDLE of the arrival day to the MIDDLE of the
+        // checkout day, so the departing animal still shows on its checkout
+        // morning and a same-day arrival takes the afternoon half — the two
+        // meet at mid-day without overlapping.
         const clipsLeft  = a.startDate < days[0]
         const clipsRight = a.endDate > days[days.length - 1]
-        const visStart = clipsLeft  ? 0              : days.indexOf(a.startDate)
+        const visStart = clipsLeft  ? 0               : days.indexOf(a.startDate)
         const visEnd   = clipsRight ? days.length - 1 : days.indexOf(a.endDate)
         if (visStart === -1 || visEnd === -1 || visEnd < visStart) return null
         return {
@@ -606,20 +615,37 @@ function SpaceRow({ space, days, assignments, todayStr, onNavigate, variant = 'n
       })
       .filter((x): x is RawBlock => x !== null)
 
-    // Lane assignment using sortKey for ordering
+    // Lane assignment. A checkout day (visEnd) can equal the next booking's
+    // arrival day (visStart) in the same lane — they share only the mid-day
+    // point — so a lane frees up AT its block's visEnd, not after it.
     const sorted = [...rawBlocks].sort((a, b) => a.sortKey - b.sortKey)
     const laneEnds: number[] = []
     const laned = sorted.map(b => {
       let lane = laneEnds.findIndex(r => r <= b.visStart)
       if (lane === -1) { lane = laneEnds.length; laneEnds.push(0) }
-      laneEnds[lane] = b.visEnd + 1
+      laneEnds[lane] = b.visEnd
       return { ...b, lane }
     })
 
     const numLanes = Math.max(laneEnds.length, 1)
     const laneH   = Math.max(26, Math.floor((ROW_H - 8) / numLanes))
+
+    // Let a block grow downward across any lanes free for its whole span, so a
+    // booking that isn't sharing fills the full row height. Strict overlap: two
+    // blocks that only touch at a checkout/arrival day don't conflict.
+    const overlaps = (a: typeof laned[number], b: typeof laned[number]) =>
+      a.visStart < b.visEnd && b.visStart < a.visEnd
+    const spanned = laned.map(b => {
+      let laneSpan = 1
+      for (let l = b.lane + 1; l < numLanes; l++) {
+        if (laned.some(o => o !== b && o.lane === l && overlaps(o, b))) break
+        laneSpan++
+      }
+      return { ...b, laneSpan }
+    })
+
     return {
-      blocks:    laned.map(b => ({ ...b, top: 4 + b.lane * laneH, blockH: laneH - 2 })),
+      blocks:    spanned.map(b => ({ ...b, top: 4 + b.lane * laneH, blockH: b.laneSpan * laneH - 2 })),
       rowHeight: numLanes > 1 ? numLanes * laneH + 8 : ROW_H,
     }
   }, [assignments, days])
@@ -641,13 +667,32 @@ function SpaceRow({ space, days, assignments, todayStr, onNavigate, variant = 'n
         const isToday   = d === todayStr
         const dow       = new Date(d + 'T12:00:00').getDay()
         const isWeekend = dow === 0 || dow === 6
+        // end_date is the checkout day (not a night), so a day is only occupied
+        // up to the day before end_date — the checkout day itself is free.
+        const covered   = assignments.some(a => a.startDate <= d && d < a.endDate)
+        const clickable = !!onEmptyClick && !covered && d >= todayStr
+
+        function handleClick() {
+          if (!onEmptyClick) return
+          // Latest free departure = the next booking's arrival day (checkout that
+          // morning is fine), or open-ended if nothing follows.
+          const nextStart = assignments
+            .map(a => a.startDate)
+            .filter(s => s > d)
+            .sort()[0]
+          onEmptyClick(d, nextStart ?? null)
+        }
+
         return (
           <div
             key={d}
+            onClick={clickable ? handleClick : undefined}
             className={[
               'border-l border-slate-100',
               isToday ? 'bg-blue-50/40' : isWeekend ? 'bg-slate-50/60' : '',
+              clickable ? 'cursor-pointer hover:bg-[color:var(--brand-primary)]/10' : '',
             ].join(' ')}
+            title={clickable ? 'Add a booking here' : undefined}
           />
         )
       })}
@@ -656,8 +701,12 @@ function SpaceRow({ space, days, assignments, todayStr, onNavigate, variant = 'n
         const s = STATUS_STYLES[b.displayStatus] ?? STATUS_STYLES.enquiry
         const leftPad  = b.clipsLeft  ? -1 : 3
         const rightPad = b.clipsRight ?  0 : 3
-        const leftStyle  = `calc(${SPACE_COL_W}px + ${b.visStart} / ${days.length} * (100% - ${SPACE_COL_W}px) + ${leftPad}px)`
-        const widthStyle = `calc(${b.visEnd - b.visStart + 1} / ${days.length} * (100% - ${SPACE_COL_W}px) - ${leftPad + rightPad}px)`
+        // Start at mid-arrival-day, end at mid-checkout-day (unless clipped to the
+        // window edge, where we run to the column boundary).
+        const leftUnits  = b.clipsLeft  ? b.visStart   : b.visStart + 0.5
+        const rightUnits = b.clipsRight ? b.visEnd + 1 : b.visEnd + 0.5
+        const leftStyle  = `calc(${SPACE_COL_W}px + ${leftUnits} / ${days.length} * (100% - ${SPACE_COL_W}px) + ${leftPad}px)`
+        const widthStyle = `calc(${rightUnits - leftUnits} / ${days.length} * (100% - ${SPACE_COL_W}px) - ${leftPad + rightPad}px)`
         return (
           <button
             key={b.id}
@@ -700,12 +749,14 @@ const views: ViewMode[] = ['Grid', 'Occupancy']
 
 export default function CalendarPage() {
   const navigate = useNavigate()
-  const { business } = useBusinessContext()
+  const { business, staffUser, isAdmin } = useBusinessContext()
   const { can } = usePlan()
+  const canEdit       = isAdmin || canEditRole(staffUser?.role ?? 'read_only')
   const canFilters    = can('calendarFilters')
   const canOccupancy  = can('occupancyView')
 
   const [newOpen,      setNewOpen]      = useState(false)
+  const [prefill,      setPrefill]      = useState<{ spaceId: string; startDate: string; maxEndDate?: string } | null>(null)
   const [filtersOpen,  setFiltersOpen]  = useState(false)
   const [activeView,   setActiveView]   = useState<ViewMode>('Grid')
   const [filters,      setFilters]      = useState<CalendarFilters>(DEFAULT_FILTERS)
@@ -823,7 +874,7 @@ export default function CalendarPage() {
         id: a.id, spaceId: a.space_id, startDate: a.start_date, endDate: a.end_date,
         bookingId:     booking?.id ?? '',
         status:        stored,
-        displayStatus: computeDisplayStatus(stored, hasOutstanding(owner, pet)),
+        displayStatus: computeDisplayStatus(stored, hasOutstanding(owner, pet), a.end_date),
         ownerName:     [owner?.first_name, owner?.last_name].filter(Boolean).join(' '),
         petName:       pet?.name ?? '?',
         speciesColour: pet?.species?.colour ?? null,
@@ -847,7 +898,7 @@ export default function CalendarPage() {
             startDate: b.start_date, endDate: b.end_date,
             bookingId: b.id,
             status:        stored,
-            displayStatus: computeDisplayStatus(stored, hasOutstanding(b.owner, pet)),
+            displayStatus: computeDisplayStatus(stored, hasOutstanding(b.owner, pet), b.end_date),
             ownerName, petName: pet?.name ?? '?',
             speciesColour: pet?.species?.colour ?? null,
             speciesId:     pet?.species?.id ?? null,
@@ -917,7 +968,7 @@ export default function CalendarPage() {
   const { filteredAssignments, filteredUnassignedPets, filteredWaitingList } = useMemo(() => {
     function filterList(list: CalendarAssignment[]): CalendarAssignment[] {
       return list.filter(a => {
-        if (filters.statuses.size > 0 && !filters.statuses.has(a.displayStatus)) return false
+        if (filters.statuses.size > 0 && !filters.statuses.has(a.displayStatus as DbBookingStatus)) return false
         if (filters.speciesIds.size > 0 && (!a.speciesId || !filters.speciesIds.has(a.speciesId))) return false
         if (filters.petSizes.size > 0 && (!a.petSize || !filters.petSizes.has(a.petSize as PetSize))) return false
         if (filters.vaccinationStatus === 'verified' && !a.hasVaccination) return false
@@ -986,7 +1037,7 @@ export default function CalendarPage() {
               a.speciesId === sp.id &&
               a.spaceId !== '__unassigned' &&
               a.startDate <= day &&
-              a.endDate >= day
+              a.endDate > day
             ) {
               occupied.add(a.spaceId)
             }
@@ -1022,7 +1073,7 @@ export default function CalendarPage() {
   const availabilityByDay = useMemo(() => days.map(day => {
     const occupiedOnDay = new Map<string, number>()
     for (const a of assignments) {
-      if (CAPACITY_STATUSES.has(a.status) && a.spaceId !== '__unassigned' && a.startDate <= day && a.endDate >= day) {
+      if (CAPACITY_STATUSES.has(a.status) && a.spaceId !== '__unassigned' && a.startDate <= day && a.endDate > day) {
         occupiedOnDay.set(a.spaceId, (occupiedOnDay.get(a.spaceId) ?? 0) + 1)
       }
     }
@@ -1061,7 +1112,7 @@ export default function CalendarPage() {
       <PageHeader
         title="Calendar"
         action={
-          <Button size="sm" onClick={() => setNewOpen(true)}>
+          <Button size="sm" onClick={() => { setPrefill(null); setNewOpen(true) }} className={canEdit ? '' : 'hidden'}>
             + New booking
           </Button>
         }
@@ -1301,6 +1352,10 @@ export default function CalendarPage() {
                       assignments={filteredAssignments.filter(a => a.spaceId === space.id)}
                       todayStr={todayStr}
                       onNavigate={bookingId => navigate(`/bookings/${bookingId}`)}
+                      onEmptyClick={canEdit ? (date, maxEnd) => {
+                        setPrefill({ spaceId: space.id, startDate: date, maxEndDate: maxEnd ?? undefined })
+                        setNewOpen(true)
+                      } : undefined}
                     />
                   ))}
                 </div>
@@ -1355,8 +1410,11 @@ export default function CalendarPage() {
 
       <NewBookingModal
         open={newOpen}
-        onClose={() => setNewOpen(false)}
-        onCreated={bookingId => { setNewOpen(false); navigate(`/bookings/${bookingId}`) }}
+        onClose={() => { setNewOpen(false); setPrefill(null) }}
+        onCreated={bookingId => { setNewOpen(false); setPrefill(null); navigate(`/bookings/${bookingId}`) }}
+        initialSpaceId={prefill?.spaceId}
+        initialStartDate={prefill?.startDate}
+        maxEndDate={prefill?.maxEndDate}
       />
     </div>
   )

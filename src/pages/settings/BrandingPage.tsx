@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { CheckCircle2, ImageIcon } from 'lucide-react'
+import { CheckCircle2, ImageIcon, Upload, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
-import { Input, Button, PageHeader, Card, PlanGate } from '@/components/ui'
+import { Button, PageHeader, Card, PlanGate } from '@/components/ui'
 import { usePlan } from '@/lib/plans'
 
 interface FormValues {
@@ -132,6 +132,36 @@ export default function BrandingPage() {
   const [saved, setSaved] = useState(false)
   const savedThemeRef = useRef(toForm(theme))
 
+  const [uploadingLogo, setUploadingLogo] = useState(false)
+  const [logoError,     setLogoError]     = useState<string | null>(null)
+  const logoInputRef = useRef<HTMLInputElement>(null)
+
+  async function handleLogoUpload(file: File) {
+    if (!business) return
+    if (!file.type.startsWith('image/')) { setLogoError('Please choose an image file (PNG or SVG recommended).'); return }
+    if (file.size > 5 * 1024 * 1024) { setLogoError('File must be under 5 MB.'); return }
+    setLogoError(null)
+    setUploadingLogo(true)
+    try {
+      const ext  = file.name.split('.').pop()?.toLowerCase() ?? 'png'
+      const path = `${business.id}/logo-${Date.now()}.${ext}`
+      const { error: upErr } = await supabase.storage.from('pets').upload(path, file, { upsert: true })
+      if (upErr) throw upErr
+      const { data } = supabase.storage.from('pets').getPublicUrl(path)
+      setForm(prev => ({ ...prev, logoUrl: data.publicUrl }))
+      if (saved) setSaved(false)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upload failed'
+      setLogoError(
+        msg.toLowerCase().includes('bucket')
+          ? 'Storage bucket not found — create a public bucket named "pets" in your Supabase Storage settings.'
+          : msg
+      )
+    } finally {
+      setUploadingLogo(false)
+    }
+  }
+
   // When context theme updates (after reload), re-sync form and saved reference
   useEffect(() => {
     const fresh = toForm(theme)
@@ -217,19 +247,19 @@ export default function BrandingPage() {
           title="Logo"
           description="Shown in the owner portal and on printouts — not yet visible in the staff app"
         >
-          <div className="space-y-4">
-            <Input
-              id="logo_url"
-              label="Logo URL"
-              type="url"
-              value={form.logoUrl}
+          <div className="space-y-3">
+            <input
+              ref={logoInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
               onChange={e => {
-                setForm(prev => ({ ...prev, logoUrl: e.target.value }))
-                if (saved) setSaved(false)
+                const file = e.target.files?.[0]
+                if (file) handleLogoUpload(file)
+                e.target.value = ''  // allow re-selecting the same file
               }}
-              placeholder="https://cdn.yourkennels.co.uk/logo.png"
-              hint="Direct link to your logo image (PNG or SVG recommended). File upload coming in a future update."
             />
+
             {logoPreviewValid ? (
               <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200">
                 <img
@@ -238,14 +268,34 @@ export default function BrandingPage() {
                   className="h-12 w-auto max-w-[160px] object-contain rounded"
                   onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                 />
-                <p className="text-xs text-slate-500">Preview — actual display may vary</p>
+                <div className="flex items-center gap-2 ml-auto">
+                  <Button type="button" variant="secondary" size="sm" icon={<Upload className="w-3.5 h-3.5" />}
+                    loading={uploadingLogo} onClick={() => logoInputRef.current?.click()}>
+                    Replace
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" icon={<X className="w-3.5 h-3.5" />}
+                    onClick={() => { setForm(prev => ({ ...prev, logoUrl: '' })); if (saved) setSaved(false) }}>
+                    Remove
+                  </Button>
+                </div>
               </div>
             ) : (
-              <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-lg border border-slate-200 text-slate-400">
-                <ImageIcon className="w-5 h-5 flex-shrink-0" />
-                <p className="text-xs">Enter a URL above to preview your logo</p>
-              </div>
+              <button
+                type="button"
+                onClick={() => logoInputRef.current?.click()}
+                className="w-full flex flex-col items-center justify-center gap-2 p-6 bg-slate-50 rounded-lg border border-dashed border-slate-300 text-slate-400 hover:border-slate-400 hover:text-slate-500 transition-colors"
+              >
+                {uploadingLogo ? (
+                  <span className="text-xs">Uploading…</span>
+                ) : (
+                  <>
+                    <ImageIcon className="w-6 h-6" />
+                    <span className="text-xs font-medium">Upload a logo (PNG or SVG, max 5 MB)</span>
+                  </>
+                )}
+              </button>
             )}
+            {logoError && <p className="text-xs text-red-600">{logoError}</p>}
           </div>
         </Section>
 

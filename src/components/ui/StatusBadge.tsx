@@ -9,6 +9,7 @@ export type BookingStatus =
   | 'cancelled'
   | 'needs-attention'
   | 'waiting-list'
+  | 'overdue'
 
 interface StatusConfig {
   label: string
@@ -27,6 +28,7 @@ const statusConfig: Record<BookingStatus, StatusConfig> = {
   'cancelled':           { label: 'Cancelled',           classes: 'bg-rose-50 text-rose-500',        dot: 'bg-rose-400' },
   'needs-attention':     { label: 'Needs attention',     classes: 'bg-red-50 text-red-700',          dot: 'bg-red-500' },
   'waiting-list':        { label: 'Waiting list',        classes: 'bg-purple-50 text-purple-700',    dot: 'bg-purple-400' },
+  'overdue':             { label: 'Overdue checkout',    classes: 'bg-red-50 text-red-700',          dot: 'bg-red-500' },
 }
 
 interface StatusBadgeProps {

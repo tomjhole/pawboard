@@ -16,6 +16,7 @@ import { useAuth } from '@/context/AuthContext'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { canAccessSettings } from '@/lib/roles'
 import FeedbackModal from '@/components/FeedbackModal'
+import MyProfileModal from '@/components/MyProfileModal'
 
 interface SidebarProps {
   onClose: () => void
@@ -53,6 +54,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
   const { staffUser, business, isAdmin } = useBusinessContext()
   const showSettings = isAdmin || (staffUser ? canAccessSettings(staffUser.role) : false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [profileOpen,  setProfileOpen]  = useState(false)
 
   const displayName = staffUser
     ? `${staffUser.first_name} ${staffUser.last_name}`.trim()
@@ -88,6 +90,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
       </nav>
 
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+      <MyProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
 
       <div className="px-3 pb-3 border-t border-slate-200 pt-3 space-y-0.5">
         {showSettings && (
@@ -106,7 +109,13 @@ export default function Sidebar({ onClose }: SidebarProps) {
           Feedback
         </button>
 
-        <div className="flex items-center gap-3 px-3 py-2.5 mt-1">
+        <button
+          type="button"
+          onClick={() => staffUser && setProfileOpen(true)}
+          disabled={!staffUser}
+          title={staffUser ? 'Edit your profile' : undefined}
+          className="w-full flex items-center gap-3 px-3 py-2.5 mt-1 rounded-lg text-left enabled:hover:bg-slate-50 transition-colors disabled:cursor-default"
+        >
           <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0"
                style={{
                  backgroundColor: 'color-mix(in srgb, var(--brand-primary) 12%, white)',
@@ -120,7 +129,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
               <p className="text-xs text-slate-500 truncate">{business.name}</p>
             )}
           </div>
-        </div>
+        </button>
       </div>
     </div>
   )

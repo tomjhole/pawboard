@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Plus, Trash2, Sparkles, Receipt } from 'lucide-react'
+import { Plus, Trash2, RefreshCw, Receipt, Lock } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useBusinessContext } from '@/context/BusinessContext'
 import { Button, Input, Modal } from '@/components/ui'
+import { logAudit } from '@/lib/audit'
+import { syncBookingPaymentFlags } from '@/lib/payments'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -239,10 +241,13 @@ export interface BookingPricingProps {
   startDate:  string
   endDate:    string
   pets:       BookingPet[]
+  locked?:    boolean
+  /** The booking's saved total. `null` means never priced → auto-estimate on load. */
+  bookingTotal?: number | null
   onTotalChanged?: (total: number) => void
 }
 
-export default function BookingPricing({ bookingId, startDate, endDate, pets, onTotalChanged }: BookingPricingProps) {
+export default function BookingPricing({ bookingId, startDate, endDate, pets, locked = false, bookingTotal, onTotalChanged }: BookingPricingProps) {
   const { business } = useBusinessContext()
   const [items,        setItems]        = useState<LineItem[]>([])
   const [catalog,      setCatalog]      = useState<ExtrasCatalogItem[]>([])
@@ -250,15 +255,15 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
   const [rates,        setRates]        = useState<PricingRate[]>([])
   const [sharingRules, setSharingRules] = useState<SharingRule[]>([])
   const [loading,      setLoading]      = useState(true)
-  const [saving,       setSaving]       = useState(false)
   const [estimating,   setEstimating]   = useState(false)
   const [customOpen,   setCustomOpen]   = useState(false)
   const [catalogOpen,  setCatalogOpen]  = useState(false)
   const [adhocItem,    setAdhocItem]    = useState<ExtrasCatalogItem | null>(null)
-  const [totalSaved,   setTotalSaved]   = useState(false)
   const [currency,     setCurrency]     = useState('GBP')
   const [catalogDropUp, setCatalogDropUp] = useState(false)
   const catalogWrapRef = useRef<HTMLDivElement>(null)
+  const savedTotalRef  = useRef<number | null>(null)   // last total persisted to the booking
+  const autoEstimatedRef = useRef(false)               // guards the one-time auto-estimate
 
   function toggleCatalog() {
     if (!catalogOpen) {
@@ -281,7 +286,9 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
       supabase.from('pricing_rates').select('id, area_id, species_id, pet_size, unit_price, label').eq('business_id', business.id).eq('is_active', true),
       supabase.from('pricing_sharing_rules').select('animal_number, is_nth_onwards, discount_type, value').eq('business_id', business.id).order('animal_number'),
     ])
-    setItems((liRes.data ?? []) as LineItem[])
+    const loadedItems = (liRes.data ?? []) as LineItem[]
+    setItems(loadedItems)
+    savedTotalRef.current = loadedItems.reduce((s, i) => s + i.total_price, 0)
     setCatalog((catRes.data ?? []) as ExtrasCatalogItem[])
     if (psRes.data) {
       setSettings(psRes.data as PricingSettings)
@@ -294,12 +301,44 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
 
   useEffect(() => { load() }, [load])
 
-  useEffect(() => { onTotalChanged?.(total) }, [total, onTotalChanged])
+  // Auto-estimate once for a booking that has never been priced (no saved total,
+  // no charges yet) and has rates to price from. After this the total is saved,
+  // so it won't run again — use the "Refresh from rates" button to re-price.
+  useEffect(() => {
+    if (loading || autoEstimatedRef.current) return
+    if (locked || bookingTotal !== null || items.length > 0) return
+    if (rates.length === 0 || !settings) return
+    autoEstimatedRef.current = true
+    handleEstimate()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, locked, bookingTotal, items.length, rates.length, settings])
+
+  // Auto-save the total to the booking whenever charges change (debounced).
+  // Skips the initial load and any no-op where the total already matches what's saved.
+  useEffect(() => {
+    onTotalChanged?.(total)
+    if (loading || savedTotalRef.current === null) return
+    if (Math.abs(total - savedTotalRef.current) < 0.001) return
+    const t = setTimeout(async () => {
+      savedTotalRef.current = total
+      await supabase.from('bookings').update({ total_amount: total }).eq('id', bookingId)
+      // Total drives balance_paid / amount_paid, so keep the flags in sync.
+      await syncBookingPaymentFlags(bookingId)
+      onTotalChanged?.(total)
+    }, 500)
+    return () => clearTimeout(t)
+  }, [total, loading, bookingId, onTotalChanged])
 
   async function deleteItem(id: string) {
+    const removed = items.find(i => i.id === id)
     setItems(prev => prev.filter(i => i.id !== id))
     await supabase.from('booking_line_items').delete().eq('id', id)
-    setTotalSaved(false)
+    if (business && removed) {
+      logAudit(business.id, {
+        action: 'charge.removed', entity_type: 'booking', entity_id: bookingId,
+        meta: { description: removed.description, total_price: removed.total_price },
+      })
+    }
   }
 
   async function addItem(description: string, quantity: number, unit_price: number, source: LineItem['source']) {
@@ -312,7 +351,12 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
       .single()
     if (!error && data) {
       setItems(prev => [...prev, data as LineItem])
-      setTotalSaved(false)
+      if (business) {
+        logAudit(business.id, {
+          action: 'charge.added', entity_type: 'booking', entity_id: bookingId,
+          meta: { description, total_price },
+        })
+      }
     }
   }
 
@@ -334,16 +378,15 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
       const { data, error } = await supabase.from('booking_line_items').insert(rows).select()
       if (!error && data) {
         setItems(prev => [...prev.filter(i => i.source !== 'rate'), ...(data as LineItem[])])
-        setTotalSaved(false)
+        if (business) {
+          const est = (data as LineItem[]).reduce((s, i) => s + i.total_price, 0)
+          logAudit(business.id, {
+            action: 'charge.added', entity_type: 'booking', entity_id: bookingId,
+            meta: { description: 'Estimate from rates', total_price: est },
+          })
+        }
       }
     } finally { setEstimating(false) }
-  }
-
-  async function saveTotal() {
-    setSaving(true)
-    await supabase.from('bookings').update({ total_amount: total }).eq('id', bookingId)
-    setSaving(false)
-    setTotalSaved(true)
   }
 
   if (loading) {
@@ -383,10 +426,12 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
                 <td className="py-2 pr-3 text-right text-slate-500">{fmt(item.unit_price, currency)}</td>
                 <td className="py-2 text-right font-medium text-slate-900">{fmt(item.total_price, currency)}</td>
                 <td className="py-2 pl-2">
-                  <button onClick={() => deleteItem(item.id)}
-                    className="opacity-0 group-hover:opacity-100 p-1 rounded text-slate-300 hover:text-red-500 transition-all">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {!locked && (
+                    <button onClick={() => deleteItem(item.id)}
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded text-slate-300 hover:text-red-500 transition-all">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -399,17 +444,27 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
         </table>
       )}
 
+      {/* Locked banner */}
+      {locked && (
+        <div className="flex items-center gap-2 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-sm text-slate-500">
+          <Lock className="w-3.5 h-3.5 flex-shrink-0" />
+          Charges are locked because this booking is checked out or cancelled. Reopen it to make changes.
+        </div>
+      )}
+
       {/* Actions */}
+      {!locked && (
       <div className="flex flex-wrap items-center gap-2">
         {hasRates && (
           <Button
             size="sm"
             variant="secondary"
-            icon={<Sparkles className="w-3.5 h-3.5" />}
+            icon={<RefreshCw className="w-3.5 h-3.5" />}
             onClick={handleEstimate}
             loading={estimating}
+            title="Recalculate rate charges from your current pricing"
           >
-            {items.some(i => i.source === 'rate') ? 'Re-estimate from rates' : 'Estimate from rates'}
+            Refresh from rates
           </Button>
         )}
         <Button size="sm" variant="secondary" icon={<Plus className="w-3.5 h-3.5" />}
@@ -463,15 +518,8 @@ export default function BookingPricing({ bookingId, startDate, endDate, pets, on
           </div>
         )}
 
-        {items.length > 0 && (
-          <div className="ml-auto flex items-center gap-2">
-            {totalSaved && <span className="text-xs text-emerald-600">Saved</span>}
-            <Button size="sm" onClick={saveTotal} loading={saving}>
-              Save total to booking
-            </Button>
-          </div>
-        )}
       </div>
+      )}
 
       <CustomLineModal
         open={customOpen}

@@ -435,6 +435,7 @@ export type Database = {
       }
       bookings: {
         Row: {
+          amount_paid: number
           balance_paid: boolean
           balance_paid_at: string | null
           business_id: string
@@ -458,6 +459,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          amount_paid?: number
           balance_paid?: boolean
           balance_paid_at?: string | null
           business_id: string
@@ -481,6 +483,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          amount_paid?: number
           balance_paid?: boolean
           balance_paid_at?: string | null
           business_id?: string
@@ -1772,6 +1775,7 @@ export type Database = {
       revoke_platform_admin:         { Args: { p_user_id: string }; Returns: undefined }
       create_business_admin:         { Args: { p_name: string; p_slug: string }; Returns: string }
       delete_business_admin:         { Args: { p_business_id: string }; Returns: undefined }
+      regenerate_demo_data:          { Args: { p_owner_email?: string }; Returns: undefined }
       set_business_plan_admin:       { Args: { p_business_id: string; p_plan: string }; Returns: undefined }
       update_plan_pricing: {
         Args: { p_plan_id: string; p_price: number; p_currency?: string }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Building2, ArrowRight, CheckCircle, PawPrint, Plus, Trash2, DollarSign } from 'lucide-react'
+import { Building2, ArrowRight, CheckCircle, PawPrint, Plus, Trash2, DollarSign, RefreshCw } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useBusinessContext } from '@/context/BusinessContext'
@@ -106,6 +106,12 @@ export default function AdminPage() {
   const [priceSaving,  setPriceSaving]  = useState<PlanId | null>(null)
   const [priceSaved,   setPriceSaved]   = useState<PlanId | null>(null)
 
+  // Demo data regeneration
+  const [regenConfirm,  setRegenConfirm]  = useState(false)
+  const [regenerating,  setRegenerating]  = useState(false)
+  const [regenError,    setRegenError]    = useState<string | null>(null)
+  const [regenDone,     setRegenDone]     = useState(false)
+
   const currentId = business?.id
 
   const load = useCallback(() => {
@@ -178,6 +184,20 @@ export default function AdminPage() {
     setPriceSaving(null)
     setPriceSaved(planId)
     setTimeout(() => setPriceSaved(null), 3000)
+  }
+
+  async function handleRegenerate() {
+    setRegenerating(true)
+    setRegenError(null)
+    const { error } = await supabase.rpc('regenerate_demo_data')
+    setRegenerating(false)
+    setRegenConfirm(false)
+    if (error) {
+      setRegenError(error.message)
+      return
+    }
+    setRegenDone(true)
+    setTimeout(() => setRegenDone(false), 3000)
   }
 
   function handleCreated(id: string) {
@@ -411,6 +431,55 @@ export default function AdminPage() {
               </li>
             ))}
           </ul>
+        </Card>
+      </div>
+
+      {/* Demo data */}
+      <div className="flex-1 max-w-3xl mx-auto w-full px-6 pb-8">
+        <div className="flex items-center gap-2 mb-4">
+          <RefreshCw className="w-4 h-4 text-slate-400" />
+          <h2 className="text-sm font-semibold text-slate-700">Demo data</h2>
+        </div>
+        <Card padding="none">
+          <div className="flex items-center gap-4 px-5 py-4">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-slate-700">Regenerate the Oakwood Boarding Kennels demo tenant</p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Rebuilds it with fresh dates relative to today — only touches that one demo tenant.
+              </p>
+              {regenError && <p className="text-xs text-red-600 mt-1.5">{regenError}</p>}
+            </div>
+            {regenConfirm ? (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <span className="text-xs text-slate-500">Regenerate now?</span>
+                <button
+                  onClick={handleRegenerate}
+                  disabled={regenerating}
+                  className="text-xs font-medium text-violet-600 hover:text-violet-700 disabled:opacity-50"
+                >
+                  {regenerating ? 'Regenerating…' : 'Yes, regenerate'}
+                </button>
+                <button
+                  onClick={() => setRegenConfirm(false)}
+                  className="text-xs font-medium text-slate-500 hover:text-slate-700"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {regenDone && (
+                  <span className="text-xs text-emerald-600 flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5" /> Regenerated
+                  </span>
+                )}
+                <Button size="sm" variant="secondary" icon={<RefreshCw className="w-3.5 h-3.5" />}
+                  onClick={() => { setRegenError(null); setRegenConfirm(true) }}>
+                  Regenerate demo data
+                </Button>
+              </div>
+            )}
+          </div>
         </Card>
       </div>
 
